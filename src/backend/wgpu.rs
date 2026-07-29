@@ -44,6 +44,7 @@ struct GpuContext {
     #[cfg(test)]
     hash_bind_group_layout: wgpu::BindGroupLayout,
     adapter_name: String,
+    backend_name: &'static str,
 }
 
 struct SearchBuffers {
@@ -87,20 +88,33 @@ pub fn search(
     Ok(BackendOutcome {
         hit,
         processed,
-        backend_name: selected_backend().0.to_owned(),
+        backend_name: context.backend_name.to_owned(),
         device_name: Some(context.adapter_name),
         fallback_reasons: Vec::new(),
     })
 }
 
-fn selected_backend() -> (&'static str, wgpu::Backends) {
+fn enabled_backends() -> wgpu::Backends {
     #[cfg(target_os = "macos")]
     {
-        ("wgpu-metal", wgpu::Backends::METAL)
+        wgpu::Backends::METAL
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        ("wgpu-vulkan", wgpu::Backends::VULKAN)
+        wgpu::Backends::VULKAN | wgpu::Backends::DX12
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        wgpu::Backends::VULKAN
+    }
+}
+
+fn backend_name(backend: wgpu::Backend) -> &'static str {
+    match backend {
+        wgpu::Backend::Vulkan => "wgpu-vulkan",
+        wgpu::Backend::Metal => "wgpu-metal",
+        wgpu::Backend::Dx12 => "wgpu-dx12",
+        _ => "wgpu",
     }
 }
 
@@ -109,9 +123,8 @@ fn create_context() -> Result<GpuContext, SearchError> {
 }
 
 async fn create_context_async() -> Result<GpuContext, SearchError> {
-    let (backend_name, backends) = selected_backend();
     let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    instance_descriptor.backends = backends;
+    instance_descriptor.backends = enabled_backends();
     let instance = wgpu::Instance::new(instance_descriptor);
 
     let adapter = instance
@@ -123,9 +136,10 @@ async fn create_context_async() -> Result<GpuContext, SearchError> {
         })
         .await
         .map_err(|error| {
-            SearchError::Unavailable(format!("{backend_name} adapter request failed: {error}"))
+            SearchError::Unavailable(format!("wgpu adapter request failed: {error}"))
         })?;
     let info = adapter.get_info();
+    let backend_name = backend_name(info.backend);
     let required_feature = wgpu::Features::SHADER_INT64;
     if !adapter.features().contains(required_feature) {
         return Err(SearchError::Unavailable(format!(
@@ -204,6 +218,7 @@ async fn create_context_async() -> Result<GpuContext, SearchError> {
         #[cfg(test)]
         hash_bind_group_layout,
         adapter_name: info.name,
+        backend_name,
     })
 }
 
@@ -306,7 +321,7 @@ impl GpuContext {
             &self.device,
             &buffers.readback,
             SEARCH_RESULT_SIZE,
-            selected_backend().0,
+            self.backend_name,
         )?;
         Ok(bytemuck::pod_read_unaligned(&bytes))
     }
@@ -376,7 +391,7 @@ impl GpuContext {
             &self.device,
             &readback_buffer,
             output_size,
-            selected_backend().0,
+            self.backend_name,
         )?;
         Ok(bytemuck::cast_slice(&bytes).to_vec())
     }
@@ -413,16 +428,19 @@ fn readback(
     });
     device
         .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|error| SearchError::Runtime(format!("{backend_name} device poll failed: {error}")))?;
-    let map_result = receiver
-        .recv()
-        .map_err(|error| SearchError::Runtime(format!("{backend_name} map callback failed: {error}")))?;
-    map_result
-        .map_err(|error| SearchError::Runtime(format!("{backend_name} readback map failed: {error}")))?;
+        .map_err(|error| {
+            SearchError::Unavailable(format!("{backend_name} device poll failed: {error}"))
+        })?;
+    let map_result = receiver.recv().map_err(|error| {
+        SearchError::Unavailable(format!("{backend_name} map callback failed: {error}"))
+    })?;
+    map_result.map_err(|error| {
+        SearchError::Unavailable(format!("{backend_name} readback map failed: {error}"))
+    })?;
 
-    let view = slice
-        .get_mapped_range()
-        .map_err(|error| SearchError::Runtime(format!("{backend_name} mapped range failed: {error}")))?;
+    let view = slice.get_mapped_range().map_err(|error| {
+        SearchError::Unavailable(format!("{backend_name} mapped range failed: {error}"))
+    })?;
     let bytes = view.to_vec();
     drop(view);
     buffer.unmap();
@@ -430,69 +448,4 @@ fn readback(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::candidate;
-    use std::sync::Arc;
-
-    const CONFIG: CandidateConfig = CandidateConfig {
-        commit: 0xeb366895,
-        node_suffix: 0xebac62b9,
-    };
-
-    fn context_or_skip() -> Option<GpuContext> {
-        match create_context() {
-            Ok(context) => Some(context),
-            Err(SearchError::Unavailable(reason)) => {
-                eprintln!("Skipping GPU test: {reason}");
-                None
-            }
-            Err(error) => panic!("GPU initialization failed unexpectedly: {error}"),
-        }
-    }
-
-    #[test]
-    fn gpu_hashes_match_scalar() {
-        let Some(context) = context_or_skip() else {
-            return;
-        };
-
-        let actual = context
-            .hash_first_words(0, 256, CONFIG)
-            .expect("GPU hash readback must succeed");
-        assert_eq!(actual.len(), 256);
-        for (offset, &actual_word) in actual.iter().enumerate() {
-            let index = offset as u64;
-            let expected = candidate::digest_word(&candidate::digest(index, CONFIG));
-            assert_eq!(actual_word, expected, "index {index}");
-        }
-    }
-
-    #[test]
-    fn gpu_search_finds_valid_hit() {
-        let progress: ProgressReporter = Arc::new(|_| {});
-        let config = SearchConfig {
-            candidate: CONFIG,
-            max_index: 65_536,
-            leading_zero_bits: 8,
-        };
-
-        let outcome = match search(&config, &progress) {
-            Ok(outcome) => outcome,
-            Err(SearchError::Unavailable(reason)) => {
-                eprintln!("Skipping GPU test: {reason}");
-                return;
-            }
-            Err(error) => panic!("GPU search failed unexpectedly: {error}"),
-        };
-        let hit = outcome
-            .hit
-            .expect("8-bit predicate should hit in 65536 candidates");
-        assert!(hit.index < config.max_index);
-        let word = candidate::digest_word(&candidate::digest(hit.index, CONFIG));
-        assert!(candidate::matches_leading_zero_bits(
-            word,
-            config.leading_zero_bits
-        ));
-    }
-}
+mod test;
