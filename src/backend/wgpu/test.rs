@@ -94,3 +94,56 @@ fn gpu_search_finds_valid_hit() {
         ));
     }
 }
+
+#[test]
+fn gpu_search_returns_minimum_match() {
+    let progress: ProgressReporter = Arc::new(|_| {});
+    let config = SearchConfig {
+        candidate: CONFIG,
+        max_index: 256,
+        leading_zero_bits: 0,
+    };
+
+    let outcome = match search(&config, &progress) {
+        Ok(outcome) => outcome,
+        Err(SearchError::Unavailable(reason)) => {
+            eprintln!("Skipping GPU test: {reason}");
+            return;
+        }
+        Err(error) => panic!("GPU search failed unexpectedly: {error}"),
+    };
+
+    assert_eq!(outcome.hit, Some(SearchHit { index: 0 }));
+    assert_eq!(outcome.processed, 1);
+    assert_eq!(outcome.evaluated, config.max_index);
+}
+
+#[test]
+fn gpu_session_reuses_resources() {
+    let session = match WgpuSearchSession::new() {
+        Ok(session) => session,
+        Err(SearchError::Unavailable(reason)) => {
+            eprintln!("Skipping GPU test: {reason}");
+            return;
+        }
+        Err(error) => panic!("GPU initialization failed unexpectedly: {error}"),
+    };
+    let progress: ProgressReporter = Arc::new(|_| {});
+    let config = SearchConfig {
+        candidate: CONFIG,
+        max_index: 256,
+        leading_zero_bits: 0,
+    };
+
+    let first = session
+        .search(&config, &progress)
+        .expect("first warm search");
+    let second = session
+        .search(&config, &progress)
+        .expect("second warm search");
+
+    assert_eq!(first.hit, Some(SearchHit { index: 0 }));
+    assert_eq!(second.hit, first.hit);
+    assert_eq!(second.processed, first.processed);
+    assert_eq!(second.evaluated, first.evaluated);
+}
