@@ -12,7 +12,7 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
     let stopped = AtomicBool::new(false);
 
     let hit = (0..chunk_count).into_par_iter().find_map_any(|chunk| {
-        if stopped.load(Ordering::Relaxed) {
+        if stopped.load(Ordering::Acquire) {
             return None;
         }
 
@@ -21,7 +21,7 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
         let mut local_processed = 0u64;
 
         for index in start..end {
-            if stopped.load(Ordering::Relaxed) {
+            if stopped.load(Ordering::Acquire) {
                 break;
             }
 
@@ -31,8 +31,8 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
                 candidate::digest_word(&hash),
                 config.leading_zero_bits,
             ) {
-                if !stopped.swap(true, Ordering::Relaxed) {
-                    processed.fetch_add(local_processed, Ordering::Relaxed);
+                if !stopped.swap(true, Ordering::AcqRel) {
+                    processed.fetch_add(local_processed, Ordering::AcqRel);
                     progress(local_processed);
                     return Some(SearchHit { index });
                 }
@@ -40,14 +40,14 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
             }
         }
 
-        processed.fetch_add(local_processed, Ordering::Relaxed);
+        processed.fetch_add(local_processed, Ordering::AcqRel);
         progress(local_processed);
         None
     });
 
     BackendOutcome {
         hit,
-        processed: processed.load(Ordering::Relaxed),
+        processed: processed.load(Ordering::Acquire),
         backend_name: "scalar".to_owned(),
         device_name: None,
         fallback_reasons: Vec::new(),
@@ -55,30 +55,4 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use super::*;
-
-    #[test]
-    fn bounded_search_reports_a_valid_hit() {
-        let progress = Arc::new(Mutex::new(0u64));
-        let progress_callback: ProgressReporter = {
-            let progress = Arc::clone(&progress);
-            Arc::new(move |count| *progress.lock().expect("progress lock") += count)
-        };
-        let config = SearchConfig {
-            candidate: crate::candidate::CandidateConfig {
-                commit: 0xeb366895,
-                node_suffix: 0xebac62b9,
-            },
-            max_index: 256,
-            leading_zero_bits: 0,
-        };
-
-        let outcome = search(&config, &progress_callback);
-        let hit = outcome.hit.expect("zero-bit predicate must hit");
-        assert!(hit.index < config.max_index);
-        assert_eq!(outcome.processed, 1);
-    }
-}
+mod test;
