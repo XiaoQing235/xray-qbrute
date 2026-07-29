@@ -108,7 +108,7 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("UUID      : {uuid}");
         println!("answer    : /answer {uuid}");
         println!("hash[:10] : {}", hex::encode(&hash[..10]));
-        println!("attempts  : {}", outcome.processed);
+        println!("processed : {} candidates", outcome.processed);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {speed:.1} M/s");
         progress_bar.finish_with_message("Found!");
