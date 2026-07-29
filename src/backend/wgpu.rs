@@ -12,6 +12,35 @@ const SEARCH_RESULT_SIZE: u64 = std::mem::size_of::<GpuResult>() as u64;
 
 const SHADER: &str = include_str!("../shaders/sha512_search.wgsl");
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WgpuBackend {
+    Vulkan,
+    Metal,
+}
+
+impl WgpuBackend {
+    fn backends(self) -> wgpu::Backends {
+        match self {
+            Self::Vulkan => wgpu::Backends::VULKAN,
+            Self::Metal => wgpu::Backends::METAL,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Vulkan => "wgpu-vulkan",
+            Self::Metal => "wgpu-metal",
+        }
+    }
+
+    fn matches(self, actual: wgpu::Backend) -> bool {
+        matches!(
+            (self, actual),
+            (Self::Vulkan, wgpu::Backend::Vulkan) | (Self::Metal, wgpu::Backend::Metal)
+        )
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuParams {
@@ -31,7 +60,7 @@ struct GpuResult {
     claimed: u32,
     index_lo: u32,
     index_hi: u32,
-    reserved: u32,
+    processed: u32,
 }
 
 struct GpuContext {
@@ -56,9 +85,10 @@ struct SearchBuffers {
 
 pub fn search(
     config: &SearchConfig,
+    selected_backend: WgpuBackend,
     progress: &ProgressReporter,
 ) -> Result<BackendOutcome, SearchError> {
-    let context = create_context()?;
+    let context = create_context(selected_backend)?;
     let buffers = context.create_search_buffers()?;
     let mut base = 0u64;
     let mut processed = 0u64;
@@ -67,8 +97,17 @@ pub fn search(
     while base < config.max_index {
         let batch_count = (config.max_index - base).min(MAX_BATCH);
         let result = context.run_search_batch(&buffers, base, batch_count, *config)?;
-        processed += batch_count;
-        progress(batch_count);
+        let batch_processed = u64::from(result.processed);
+        if batch_processed > batch_count
+            || (result.claimed == 0 && batch_processed != batch_count)
+            || (result.claimed != 0 && batch_processed == 0)
+        {
+            return Err(SearchError::Runtime(format!(
+                "GPU shader reported {batch_processed} processed candidates for a {batch_count}-candidate batch"
+            )));
+        }
+        processed += batch_processed;
+        progress(batch_processed);
 
         if result.claimed != 0 {
             let index = (u64::from(result.index_hi) << 32) | u64::from(result.index_lo);
@@ -94,37 +133,14 @@ pub fn search(
     })
 }
 
-fn enabled_backends() -> wgpu::Backends {
-    #[cfg(target_os = "macos")]
-    {
-        wgpu::Backends::METAL
-    }
-    #[cfg(target_os = "windows")]
-    {
-        wgpu::Backends::VULKAN | wgpu::Backends::DX12
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        wgpu::Backends::VULKAN
-    }
+fn create_context(selected_backend: WgpuBackend) -> Result<GpuContext, SearchError> {
+    pollster::block_on(create_context_async(selected_backend))
 }
 
-fn backend_name(backend: wgpu::Backend) -> &'static str {
-    match backend {
-        wgpu::Backend::Vulkan => "wgpu-vulkan",
-        wgpu::Backend::Metal => "wgpu-metal",
-        wgpu::Backend::Dx12 => "wgpu-dx12",
-        _ => "wgpu",
-    }
-}
-
-fn create_context() -> Result<GpuContext, SearchError> {
-    pollster::block_on(create_context_async())
-}
-
-async fn create_context_async() -> Result<GpuContext, SearchError> {
+async fn create_context_async(selected_backend: WgpuBackend) -> Result<GpuContext, SearchError> {
+    let backend_name = selected_backend.name();
     let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    instance_descriptor.backends = enabled_backends();
+    instance_descriptor.backends = selected_backend.backends();
     let instance = wgpu::Instance::new(instance_descriptor);
 
     let adapter = instance
@@ -136,10 +152,15 @@ async fn create_context_async() -> Result<GpuContext, SearchError> {
         })
         .await
         .map_err(|error| {
-            SearchError::Unavailable(format!("wgpu adapter request failed: {error}"))
+            SearchError::Unavailable(format!("{backend_name} adapter request failed: {error}"))
         })?;
     let info = adapter.get_info();
-    let backend_name = backend_name(info.backend);
+    if !selected_backend.matches(info.backend) {
+        return Err(SearchError::Unavailable(format!(
+            "{backend_name} requested but adapter {} uses {:?}",
+            info.name, info.backend
+        )));
+    }
     let required_feature = wgpu::Features::SHADER_INT64;
     if !adapter.features().contains(required_feature) {
         return Err(SearchError::Unavailable(format!(

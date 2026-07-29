@@ -111,7 +111,7 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("processed : {} candidates", outcome.processed);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {speed:.1} M/s");
-        progress_bar.finish_with_message("Found!");
+        progress_bar.abandon_with_message("Found!");
     } else {
         println!("\n===== NOT FOUND =====");
         println!("searched  : {} candidates", outcome.processed);

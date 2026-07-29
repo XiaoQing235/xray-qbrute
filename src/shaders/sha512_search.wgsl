@@ -41,6 +41,9 @@ const SHA512_K: array<u64, 80> = array<u64, 80>(
     0x5fcb6fab3ad6faeclu, 0x6c44198c4a475817lu,
 );
 
+const CANDIDATES_PER_INVOCATION: u32 = 32u;
+const CANDIDATES_PER_WORKGROUP: u32 = 8192u;
+
 struct Params {
     base_lo: u32,
     base_hi: u32,
@@ -56,7 +59,7 @@ struct SearchResult {
     claimed: atomic<u32>,
     index_lo: u32,
     index_hi: u32,
-    reserved: u32,
+    processed: atomic<u32>,
 };
 
 @group(0) @binding(0)
@@ -67,6 +70,8 @@ var<storage, read_write> search_result: SearchResult;
 
 @group(0) @binding(2)
 var<storage, read_write> hash_results: array<u64>;
+
+var<workgroup> search_workgroup_active: u32;
 
 fn rotr(value: u64, amount: u32) -> u64 {
     return (value >> amount) | (value << (64u - amount));
@@ -160,12 +165,30 @@ fn matches_leading_zero_bits(word: u64, bits: u32) -> bool {
 }
 
 @compute @workgroup_size(256)
-fn search_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let base = (u64(params.base_hi) << 32u) | u64(params.base_lo);
-    let invocation_start = base + u64(gid.x) * 32lu;
+fn search_main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_index) local_id: u32,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+) {
+    // Admit the whole workgroup together so queued groups can stop after a hit.
+    if (local_id == 0u) {
+        let group_start = workgroup_id.x * CANDIDATES_PER_WORKGROUP;
+        let group_count = min(CANDIDATES_PER_WORKGROUP, params.candidate_count - group_start);
+        search_workgroup_active = select(0u, 1u, atomicLoad(&search_result.claimed) == 0u);
+        if (search_workgroup_active != 0u) {
+            atomicAdd(&search_result.processed, group_count);
+        }
+    }
+    workgroupBarrier();
+    if (search_workgroup_active == 0u) {
+        return;
+    }
 
-    for (var offset = 0u; offset < 32u; offset = offset + 1u) {
-        let local_index = gid.x * 32u + offset;
+    let base = (u64(params.base_hi) << 32u) | u64(params.base_lo);
+    let invocation_start = base + u64(gid.x) * u64(CANDIDATES_PER_INVOCATION);
+
+    for (var offset = 0u; offset < CANDIDATES_PER_INVOCATION; offset = offset + 1u) {
+        let local_index = gid.x * CANDIDATES_PER_INVOCATION + offset;
         if (local_index >= params.candidate_count) {
             break;
         }
@@ -176,13 +199,11 @@ fn search_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             while (!claim.exchanged && claim.old_value == 0u) {
                 claim = atomicCompareExchangeWeak(&search_result.claimed, 0u, 1u);
             }
-            if (!claim.exchanged) {
-                return;
+            if (claim.exchanged) {
+                search_result.index_lo = u32(index & 0xfffffffflu);
+                search_result.index_hi = u32(index >> 32u);
             }
-
-            search_result.index_lo = u32(index & 0xfffffffflu);
-            search_result.index_hi = u32(index >> 32u);
-            return;
+            break;
         }
     }
 }
