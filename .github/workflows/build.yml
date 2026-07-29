@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            artifact: xray-qbrute-linux-x86_64
+            binary: target/release/xray-qbrute
+          - name: Windows x86_64
+            os: windows-latest
+            artifact: xray-qbrute-windows-x86_64
+            binary: target/release/xray-qbrute.exe
+          - name: macOS x86_64
+            os: macos-15-intel
+            artifact: xray-qbrute-macos-x86_64
+            binary: target/release/xray-qbrute
+          - name: macOS arm64
+            os: macos-14
+            artifact: xray-qbrute-macos-arm64
+            binary: target/release/xray-qbrute
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          retention-days: 7

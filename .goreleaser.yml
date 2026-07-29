@@ -1,0 +1,66 @@
+version: 2
+
+project_name: xray-qbrute
+
+before:
+  hooks:
+    - cargo install cargo-zigbuild --locked
+
+builds:
+  - id: xray-qbrute-linux-amd64
+    builder: rust
+    tool: cargo
+    command: zigbuild
+    binary: xray-qbrute
+    targets:
+      - x86_64-unknown-linux-gnu
+    flags:
+      - --release
+
+  - id: xray-qbrute-linux-arm64
+    builder: rust
+    tool: cargo
+    command: zigbuild
+    binary: xray-qbrute
+    targets:
+      - aarch64-unknown-linux-gnu
+    flags:
+      - --release
+
+  - id: xray-qbrute-windows-amd64
+    builder: rust
+    tool: cargo
+    command: zigbuild
+    binary: xray-qbrute
+    targets:
+      - x86_64-pc-windows-gnu
+    flags:
+      - --release
+
+archives:
+  - formats:
+      - zip
+    files:
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: Sn0wo2
+    name: xray-qbrute
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
