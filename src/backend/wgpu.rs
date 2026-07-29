@@ -1,16 +1,54 @@
 use bytemuck::{Pod, Zeroable};
+#[cfg(not(test))]
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::candidate::CandidateConfig;
 
 use super::{BackendOutcome, ProgressReporter, SearchConfig, SearchError, SearchHit};
 
-const WORKGROUP_SIZE: u64 = 256;
-const CANDIDATES_PER_INVOCATION: u64 = 32;
-const CANDIDATES_PER_WORKGROUP: u64 = WORKGROUP_SIZE * CANDIDATES_PER_INVOCATION;
 const MAX_BATCH: u64 = 1 << 28;
 const SEARCH_RESULT_SIZE: u64 = std::mem::size_of::<GpuResult>() as u64;
+const TUNING_DIFFICULTY_BITS: u32 = 64;
+const TUNING_CANDIDATE: CandidateConfig = CandidateConfig {
+    commit: 0xa5a5_5a5a,
+    node_suffix: 0x5a5a_a5a5,
+};
+const TUNING_WORKGROUP_SIZES: [u32; 3] = [64, 128, 256];
+const TUNING_CANDIDATES_PER_INVOCATION: [u32; 2] = [8, 16];
+#[cfg(not(test))]
+const LEGACY_PIPELINE_CACHE_SCHEMAS: [&str; 2] = ["sha512-unrolled-v1", "sha512-unrolled-v2"];
 
-const SHADER: &str = include_str!("../shaders/sha512_search.wgsl");
+#[cfg(not(test))]
+const TUNING_WARMUP_CANDIDATES: u64 = 1 << 20;
+#[cfg(test)]
+const TUNING_WARMUP_CANDIDATES: u64 = 1 << 12;
+
+#[cfg(not(test))]
+const TUNING_SAMPLE_CANDIDATES: u64 = 1 << 24;
+#[cfg(test)]
+const TUNING_SAMPLE_CANDIDATES: u64 = 1 << 14;
+
+const SHADER: &str = include_str!(concat!(env!("OUT_DIR"), "/sha512_search.wgsl"));
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KernelConfig {
+    workgroup_size: u32,
+    candidates_per_invocation: u32,
+}
+
+impl KernelConfig {
+    const fn new(workgroup_size: u32, candidates_per_invocation: u32) -> Self {
+        Self {
+            workgroup_size,
+            candidates_per_invocation,
+        }
+    }
+
+    fn candidates_per_workgroup(self) -> u64 {
+        u64::from(self.workgroup_size) * u64::from(self.candidates_per_invocation)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WgpuBackend {
@@ -46,12 +84,8 @@ impl WgpuBackend {
 struct GpuParams {
     base_lo: u32,
     base_hi: u32,
-    commit: u32,
-    node_suffix: u32,
     candidate_count: u32,
-    leading_zero_bits: u32,
-    reserved0: u32,
-    reserved1: u32,
+    reserved: u32,
 }
 
 #[repr(C)]
@@ -67,6 +101,9 @@ struct GpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     search_pipeline: wgpu::ComputePipeline,
+    kernel_config: KernelConfig,
+    tuning_elapsed: Duration,
+    max_workgroups_per_dimension: u32,
     #[cfg(test)]
     hash_pipeline: wgpu::ComputePipeline,
     search_bind_group_layout: wgpu::BindGroupLayout,
@@ -88,15 +125,20 @@ pub fn search(
     selected_backend: WgpuBackend,
     progress: &ProgressReporter,
 ) -> Result<BackendOutcome, SearchError> {
-    let context = create_context(selected_backend)?;
-    let buffers = context.create_search_buffers()?;
+    let context = create_context(selected_backend, *config)?;
+    let buffers = context.create_search_buffers();
     let mut base = 0u64;
     let mut processed = 0u64;
     let mut hit = None;
+    let search_start = Instant::now();
+    let max_batch = MAX_BATCH.min(
+        u64::from(context.max_workgroups_per_dimension)
+            * context.kernel_config.candidates_per_workgroup(),
+    );
 
     while base < config.max_index {
-        let batch_count = (config.max_index - base).min(MAX_BATCH);
-        let result = context.run_search_batch(&buffers, base, batch_count, *config)?;
+        let batch_count = (config.max_index - base).min(max_batch);
+        let result = context.run_search_batch(&buffers, base, batch_count)?;
         let batch_processed = u64::from(result.processed);
         if batch_processed > batch_count
             || (result.claimed == 0 && batch_processed != batch_count)
@@ -130,14 +172,26 @@ pub fn search(
         backend_name: context.backend_name.to_owned(),
         device_name: Some(context.adapter_name),
         fallback_reasons: Vec::new(),
+        search_elapsed: Some(search_start.elapsed()),
+        kernel_config: Some(format!(
+            "workgroup={}, candidates/thread={}",
+            context.kernel_config.workgroup_size, context.kernel_config.candidates_per_invocation
+        )),
+        tuning_elapsed: Some(context.tuning_elapsed),
     })
 }
 
-fn create_context(selected_backend: WgpuBackend) -> Result<GpuContext, SearchError> {
-    pollster::block_on(create_context_async(selected_backend))
+fn create_context(
+    selected_backend: WgpuBackend,
+    config: SearchConfig,
+) -> Result<GpuContext, SearchError> {
+    pollster::block_on(create_context_async(selected_backend, config))
 }
 
-async fn create_context_async(selected_backend: WgpuBackend) -> Result<GpuContext, SearchError> {
+async fn create_context_async(
+    selected_backend: WgpuBackend,
+    config: SearchConfig,
+) -> Result<GpuContext, SearchError> {
     let backend_name = selected_backend.name();
     let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     instance_descriptor.backends = selected_backend.backends();
@@ -161,20 +215,25 @@ async fn create_context_async(selected_backend: WgpuBackend) -> Result<GpuContex
             info.name, info.backend
         )));
     }
-    let required_feature = wgpu::Features::SHADER_INT64;
-    if !adapter.features().contains(required_feature) {
+    let limits = adapter.limits();
+    let adapter_features = adapter.features();
+    let mut required_features = wgpu::Features::SHADER_INT64;
+    if !adapter_features.contains(wgpu::Features::SHADER_INT64) {
         return Err(SearchError::Unavailable(format!(
             "{backend_name} adapter {} does not expose SHADER_INT64",
             info.name
         )));
+    }
+    if adapter_features.contains(wgpu::Features::PIPELINE_CACHE) {
+        required_features |= wgpu::Features::PIPELINE_CACHE;
     }
 
     let device_label = format!("xray-qbrute {backend_name} device");
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some(&device_label),
-            required_features: required_feature,
-            required_limits: adapter.limits(),
+            required_features,
+            required_limits: limits.clone(),
             ..Default::default()
         })
         .await
@@ -211,28 +270,54 @@ async fn create_context_async(selected_backend: WgpuBackend) -> Result<GpuContex
         immediate_size: 0,
     });
 
-    let search_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("xray-qbrute search pipeline"),
-        layout: Some(&search_pipeline_layout),
-        module: &shader,
-        entry_point: Some("search_main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
+    let tuning_start = Instant::now();
+    cleanup_legacy_pipeline_caches(&info);
+    let pipeline_cache = create_in_memory_pipeline_cache(&device);
+    let cache = pipeline_cache.as_ref();
+    let kernel_config = tune_kernel(
+        &device,
+        &queue,
+        &shader,
+        &search_pipeline_layout,
+        &search_bind_group_layout,
+        cache,
+        backend_name,
+    )?;
+    let search_pipeline = create_search_pipeline(
+        &device,
+        &shader,
+        &search_pipeline_layout,
+        config.candidate,
+        config.leading_zero_bits,
+        kernel_config,
+        cache,
+        "xray-qbrute search pipeline",
+    );
+    let tuning_elapsed = tuning_start.elapsed();
+
+    #[cfg(test)]
+    let hash_constants =
+        pipeline_constants(config.candidate, config.leading_zero_bits, kernel_config);
     #[cfg(test)]
     let hash_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("xray-qbrute hash pipeline"),
         layout: Some(&hash_pipeline_layout),
         module: &shader,
         entry_point: Some("hash_main"),
-        compilation_options: Default::default(),
-        cache: None,
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &hash_constants,
+            zero_initialize_workgroup_memory: false,
+        },
+        cache,
     });
 
     Ok(GpuContext {
         device,
         queue,
         search_pipeline,
+        kernel_config,
+        tuning_elapsed,
+        max_workgroups_per_dimension: limits.max_compute_workgroups_per_dimension,
         #[cfg(test)]
         hash_pipeline,
         search_bind_group_layout,
@@ -256,49 +341,386 @@ fn storage_binding(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry 
     }
 }
 
-impl GpuContext {
-    fn create_search_buffers(&self) -> Result<SearchBuffers, SearchError> {
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("xray-qbrute search params"),
-            size: std::mem::size_of::<GpuParams>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let result = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("xray-qbrute search result"),
-            size: SEARCH_RESULT_SIZE,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("xray-qbrute search readback"),
-            size: SEARCH_RESULT_SIZE,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("xray-qbrute search bind group"),
-            layout: &self.search_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: result.as_entire_binding(),
-                },
-            ],
-        });
+#[cfg(test)]
+fn create_in_memory_pipeline_cache(_device: &wgpu::Device) -> Option<wgpu::PipelineCache> {
+    None
+}
 
-        Ok(SearchBuffers {
-            params,
-            result,
-            readback,
-            bind_group,
+#[cfg(not(test))]
+fn create_in_memory_pipeline_cache(device: &wgpu::Device) -> Option<wgpu::PipelineCache> {
+    if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        return None;
+    }
+
+    // No external bytes enter the unsafe cache API; this cache lives only for pipeline creation.
+    let cache = unsafe {
+        device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+            label: Some("xray-qbrute pipeline cache"),
+            data: None,
+            fallback: true,
         })
+    };
+    Some(cache)
+}
+
+#[cfg(test)]
+fn cleanup_legacy_pipeline_caches(_adapter_info: &wgpu::AdapterInfo) {}
+
+#[cfg(not(test))]
+fn cleanup_legacy_pipeline_caches(adapter_info: &wgpu::AdapterInfo) {
+    let Some(cache_key) = wgpu::util::pipeline_cache_key(adapter_info) else {
+        return;
+    };
+    let Some(cache_dir) = pipeline_cache_dir() else {
+        return;
+    };
+    for schema in LEGACY_PIPELINE_CACHE_SCHEMAS {
+        let path = cache_dir.join(format!("{cache_key}-{schema}.bin"));
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_dir(cache_dir);
+}
+
+#[cfg(all(not(test), target_os = "windows"))]
+fn pipeline_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("xray-qbrute").join("gpu-cache"))
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn pipeline_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join("Library").join("Caches").join("xray-qbrute"))
+}
+
+#[cfg(all(not(test), not(any(target_os = "windows", target_os = "macos"))))]
+fn pipeline_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|path| path.join("xray-qbrute"))
+}
+
+fn pipeline_constants(
+    candidate: CandidateConfig,
+    leading_zero_bits: u32,
+    kernel: KernelConfig,
+) -> [(&'static str, f64); 5] {
+    [
+        ("COMMIT", f64::from(candidate.commit)),
+        ("NODE_SUFFIX", f64::from(candidate.node_suffix)),
+        ("LEADING_ZERO_BITS", f64::from(leading_zero_bits)),
+        ("WORKGROUP_SIZE", f64::from(kernel.workgroup_size)),
+        (
+            "CANDIDATES_PER_INVOCATION",
+            f64::from(kernel.candidates_per_invocation),
+        ),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_search_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    candidate: CandidateConfig,
+    leading_zero_bits: u32,
+    kernel: KernelConfig,
+    cache: Option<&wgpu::PipelineCache>,
+    label: &str,
+) -> wgpu::ComputePipeline {
+    let constants = pipeline_constants(candidate, leading_zero_bits, kernel);
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some("search_main"),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &constants,
+            zero_initialize_workgroup_memory: false,
+        },
+        cache,
+    })
+}
+
+fn create_search_buffers(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> SearchBuffers {
+    let params = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("xray-qbrute search params"),
+        size: std::mem::size_of::<GpuParams>() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let result = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("xray-qbrute search result"),
+        size: SEARCH_RESULT_SIZE,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("xray-qbrute search readback"),
+        size: SEARCH_RESULT_SIZE,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xray-qbrute search bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: result.as_entire_binding(),
+            },
+        ],
+    });
+
+    SearchBuffers {
+        params,
+        result,
+        readback,
+        bind_group,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_search_pipeline(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &wgpu::ComputePipeline,
+    kernel: KernelConfig,
+    buffers: &SearchBuffers,
+    base: u64,
+    candidate_count: u64,
+    backend_name: &str,
+) -> Result<GpuResult, SearchError> {
+    let params = make_params(base, candidate_count);
+    let zero_result = GpuResult::zeroed();
+    queue.write_buffer(&buffers.params, 0, bytemuck::bytes_of(&params));
+    queue.write_buffer(&buffers.result, 0, bytemuck::bytes_of(&zero_result));
+
+    let workgroups = candidate_count.div_ceil(kernel.candidates_per_workgroup()) as u32;
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("xray-qbrute search encoder"),
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("xray-qbrute search pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &buffers.bind_group, &[]);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&buffers.result, 0, &buffers.readback, 0, SEARCH_RESULT_SIZE);
+    queue.submit(Some(encoder.finish()));
+
+    let bytes = readback(device, &buffers.readback, SEARCH_RESULT_SIZE, backend_name)?;
+    Ok(bytemuck::pod_read_unaligned(&bytes))
+}
+
+struct KernelVariant {
+    config: KernelConfig,
+    pipeline: wgpu::ComputePipeline,
+    elapsed: Duration,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tune_kernel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    backend_name: &str,
+) -> Result<KernelConfig, SearchError> {
+    let limits = device.limits();
+    let buffers = create_search_buffers(device, bind_group_layout);
+    let mut configs =
+        Vec::with_capacity(TUNING_WORKGROUP_SIZES.len() * TUNING_CANDIDATES_PER_INVOCATION.len());
+
+    for workgroup_size in TUNING_WORKGROUP_SIZES {
+        for candidates_per_invocation in TUNING_CANDIDATES_PER_INVOCATION {
+            let config = KernelConfig::new(workgroup_size, candidates_per_invocation);
+            if !kernel_supported(config, &limits) {
+                continue;
+            }
+            configs.push(config);
+        }
+    }
+
+    if configs.is_empty() {
+        return Err(SearchError::Unavailable(format!(
+            "{backend_name} device does not support any kernel tuning candidate"
+        )));
+    }
+    let mut variants = compile_kernel_variants(device, shader, pipeline_layout, cache, &configs)?;
+    for variant in &variants {
+        warm_kernel_variant(device, queue, &buffers, variant, backend_name)?;
+    }
+    benchmark_kernel_variants(
+        device,
+        queue,
+        &buffers,
+        backend_name,
+        TUNING_SAMPLE_CANDIDATES,
+        &mut variants,
+    )?;
+
+    variants
+        .into_iter()
+        .min_by_key(|variant| variant.elapsed)
+        .map(|variant| variant.config)
+        .ok_or_else(|| SearchError::Runtime("kernel tuner produced no result".to_owned()))
+}
+
+fn kernel_supported(config: KernelConfig, limits: &wgpu::Limits) -> bool {
+    config.workgroup_size <= limits.max_compute_invocations_per_workgroup
+        && config.workgroup_size <= limits.max_compute_workgroup_size_x
+}
+
+fn compile_kernel_variants(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    configs: &[KernelConfig],
+) -> Result<Vec<KernelVariant>, SearchError> {
+    std::thread::scope(|scope| {
+        let handles = configs
+            .iter()
+            .copied()
+            .map(|config| {
+                scope.spawn(move || {
+                    let label = format!(
+                        "xray-qbrute tuning pipeline {}x{}",
+                        config.workgroup_size, config.candidates_per_invocation
+                    );
+                    let pipeline = create_search_pipeline(
+                        device,
+                        shader,
+                        pipeline_layout,
+                        TUNING_CANDIDATE,
+                        TUNING_DIFFICULTY_BITS,
+                        config,
+                        cache,
+                        &label,
+                    );
+                    KernelVariant {
+                        config,
+                        pipeline,
+                        elapsed: Duration::ZERO,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    SearchError::Runtime("GPU pipeline compilation thread panicked".to_owned())
+                })
+            })
+            .collect()
+    })
+}
+
+fn warm_kernel_variant(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffers: &SearchBuffers,
+    variant: &KernelVariant,
+    backend_name: &str,
+) -> Result<(), SearchError> {
+    let result = run_search_pipeline(
+        device,
+        queue,
+        &variant.pipeline,
+        variant.config,
+        buffers,
+        0,
+        TUNING_WARMUP_CANDIDATES,
+        backend_name,
+    )?;
+    validate_tuning_result(result, TUNING_WARMUP_CANDIDATES, variant.config)
+}
+
+fn benchmark_kernel_variants(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffers: &SearchBuffers,
+    backend_name: &str,
+    sample_candidates: u64,
+    variants: &mut [KernelVariant],
+) -> Result<(), SearchError> {
+    for variant in variants.iter_mut() {
+        variant.elapsed = Duration::ZERO;
+    }
+    for reverse in [false, true] {
+        for offset in 0..variants.len() {
+            let index = if reverse {
+                variants.len() - 1 - offset
+            } else {
+                offset
+            };
+            let variant = &mut variants[index];
+            let start = Instant::now();
+            let result = run_search_pipeline(
+                device,
+                queue,
+                &variant.pipeline,
+                variant.config,
+                buffers,
+                0,
+                sample_candidates,
+                backend_name,
+            )?;
+            variant.elapsed += start.elapsed();
+            validate_tuning_result(result, sample_candidates, variant.config)?;
+        }
+    }
+    if std::env::var_os("XRAY_QBRUTE_TUNING_LOG").is_some() {
+        for variant in variants.iter() {
+            let rate = (sample_candidates * 2) as f64
+                / variant.elapsed.as_secs_f64().max(f64::EPSILON)
+                / 1e6;
+            eprintln!(
+                "kernel tuning {}x{}: {rate:.1} M/s",
+                variant.config.workgroup_size, variant.config.candidates_per_invocation
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_tuning_result(
+    result: GpuResult,
+    expected_candidates: u64,
+    kernel: KernelConfig,
+) -> Result<(), SearchError> {
+    if result.claimed != 0 || u64::from(result.processed) != expected_candidates {
+        return Err(SearchError::Runtime(format!(
+            "GPU kernel {}x{} processed {} of {expected_candidates} tuning candidates (claimed={})",
+            kernel.workgroup_size,
+            kernel.candidates_per_invocation,
+            result.processed,
+            result.claimed,
+        )));
+    }
+    Ok(())
+}
+
+impl GpuContext {
+    fn create_search_buffers(&self) -> SearchBuffers {
+        create_search_buffers(&self.device, &self.search_bind_group_layout)
     }
 
     fn run_search_batch(
@@ -306,55 +728,22 @@ impl GpuContext {
         buffers: &SearchBuffers,
         base: u64,
         candidate_count: u64,
-        config: SearchConfig,
     ) -> Result<GpuResult, SearchError> {
-        let params = make_params(
+        run_search_pipeline(
+            &self.device,
+            &self.queue,
+            &self.search_pipeline,
+            self.kernel_config,
+            buffers,
             base,
             candidate_count,
-            config.candidate,
-            config.leading_zero_bits,
-        );
-        let zero_result = GpuResult::zeroed();
-        self.queue
-            .write_buffer(&buffers.params, 0, bytemuck::bytes_of(&params));
-        self.queue
-            .write_buffer(&buffers.result, 0, bytemuck::bytes_of(&zero_result));
-
-        let workgroups = candidate_count.div_ceil(CANDIDATES_PER_WORKGROUP) as u32;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("xray-qbrute search encoder"),
-            });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("xray-qbrute search pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.search_pipeline);
-            pass.set_bind_group(0, &buffers.bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        encoder.copy_buffer_to_buffer(&buffers.result, 0, &buffers.readback, 0, SEARCH_RESULT_SIZE);
-        self.queue.submit(Some(encoder.finish()));
-
-        let bytes = readback(
-            &self.device,
-            &buffers.readback,
-            SEARCH_RESULT_SIZE,
             self.backend_name,
-        )?;
-        Ok(bytemuck::pod_read_unaligned(&bytes))
+        )
     }
 
     #[cfg(test)]
-    fn hash_first_words(
-        &self,
-        base: u64,
-        candidate_count: u64,
-        config: CandidateConfig,
-    ) -> Result<Vec<u64>, SearchError> {
-        let params = make_params(base, candidate_count, config, 0);
+    fn hash_first_words(&self, base: u64, candidate_count: u64) -> Result<Vec<u64>, SearchError> {
+        let params = make_params(base, candidate_count);
         let output_size = candidate_count * std::mem::size_of::<u64>() as u64;
         let params_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("xray-qbrute hash params"),
@@ -418,21 +807,12 @@ impl GpuContext {
     }
 }
 
-fn make_params(
-    base: u64,
-    candidate_count: u64,
-    config: CandidateConfig,
-    leading_zero_bits: u32,
-) -> GpuParams {
+fn make_params(base: u64, candidate_count: u64) -> GpuParams {
     GpuParams {
         base_lo: base as u32,
         base_hi: (base >> 32) as u32,
-        commit: config.commit,
-        node_suffix: config.node_suffix,
         candidate_count: candidate_count as u32,
-        leading_zero_bits,
-        reserved0: 0,
-        reserved1: 0,
+        reserved: 0,
     }
 }
 

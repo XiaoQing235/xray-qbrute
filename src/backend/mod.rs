@@ -27,6 +27,9 @@ pub struct BackendOutcome {
     pub backend_name: String,
     pub device_name: Option<String>,
     pub fallback_reasons: Vec<String>,
+    pub search_elapsed: Option<std::time::Duration>,
+    pub kernel_config: Option<String>,
+    pub tuning_elapsed: Option<std::time::Duration>,
 }
 
 pub type ProgressReporter = Arc<dyn Fn(u64) + Send + Sync>;
