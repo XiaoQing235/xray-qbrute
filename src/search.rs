@@ -4,12 +4,13 @@ use crate::backend::{self, BackendOutcome, ProgressReporter, SearchConfig, Searc
 use crate::candidate::MAX_UUID_INDEX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-#[value(rename_all = "lower")]
+#[value(rename_all = "kebab-case")]
 pub enum BackendKind {
     Auto,
     Scalar,
     Avx2,
-    Wgpu,
+    WgpuVulkan,
+    WgpuMetal,
 }
 
 impl std::fmt::Display for BackendKind {
@@ -18,10 +19,32 @@ impl std::fmt::Display for BackendKind {
             Self::Auto => "auto",
             Self::Scalar => "scalar",
             Self::Avx2 => "avx2",
-            Self::Wgpu => "wgpu",
+            Self::WgpuVulkan => "wgpu-vulkan",
+            Self::WgpuMetal => "wgpu-metal",
         })
     }
 }
+
+#[cfg(target_os = "windows")]
+const AUTO_BACKENDS: &[BackendKind] = &[
+    BackendKind::WgpuVulkan,
+    BackendKind::Avx2,
+    BackendKind::Scalar,
+];
+
+#[cfg(target_os = "macos")]
+const AUTO_BACKENDS: &[BackendKind] = &[
+    BackendKind::WgpuMetal,
+    BackendKind::Avx2,
+    BackendKind::Scalar,
+];
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const AUTO_BACKENDS: &[BackendKind] = &[
+    BackendKind::WgpuVulkan,
+    BackendKind::Avx2,
+    BackendKind::Scalar,
+];
 
 pub fn search(
     config: &SearchConfig,
@@ -64,7 +87,7 @@ fn search_auto(
     progress: &ProgressReporter,
 ) -> Result<BackendOutcome, SearchError> {
     let mut fallback_reasons = Vec::new();
-    for backend in [BackendKind::Wgpu, BackendKind::Avx2, BackendKind::Scalar] {
+    for &backend in AUTO_BACKENDS {
         match run_backend(config, backend, progress) {
             Ok(mut outcome) => {
                 outcome.fallback_reasons = fallback_reasons;
@@ -91,7 +114,12 @@ fn run_backend(
         BackendKind::Auto => unreachable!("auto is expanded before backend dispatch"),
         BackendKind::Scalar => Ok(backend::scalar::search(config, progress)),
         BackendKind::Avx2 => backend::avx2::search(config, progress),
-        BackendKind::Wgpu => backend::wgpu::search(config, progress),
+        BackendKind::WgpuVulkan => {
+            backend::wgpu::search(config, backend::wgpu::WgpuBackend::Vulkan, progress)
+        }
+        BackendKind::WgpuMetal => {
+            backend::wgpu::search(config, backend::wgpu::WgpuBackend::Metal, progress)
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use clap::ValueEnum;
+
 use super::*;
 use crate::candidate::CandidateConfig;
 
@@ -31,4 +33,18 @@ fn invalid_range_is_rejected_before_dispatch() {
     invalid.max_index = MAX_UUID_INDEX + 1;
     let error = search(&invalid, BackendKind::Scalar, progress).expect_err("range is invalid");
     assert!(matches!(error, SearchError::InvalidConfig(_)));
+}
+
+#[test]
+fn gpu_backend_cli_names_are_explicit() {
+    let cases = [
+        (BackendKind::WgpuVulkan, "wgpu-vulkan"),
+        (BackendKind::WgpuMetal, "wgpu-metal"),
+    ];
+
+    for (backend, name) in cases {
+        assert_eq!(backend.to_string(), name);
+        assert_eq!(BackendKind::from_str(name, false), Ok(backend));
+    }
+    assert!(BackendKind::from_str("wgpu", false).is_err());
 }
