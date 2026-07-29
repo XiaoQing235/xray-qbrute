@@ -172,12 +172,17 @@ fn search_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let index = invocation_start + u64(offset);
         if (matches_leading_zero_bits(sha512_first_word(index), params.leading_zero_bits)) {
-            let claim = atomicCompareExchangeWeak(&search_result.claimed, 0u, 1u);
-            if (claim.exchanged) {
-                search_result.index_lo = u32(index & 0xfffffffflu);
-                search_result.index_hi = u32(index >> 32u);
+            var claim = atomicCompareExchangeWeak(&search_result.claimed, 0u, 1u);
+            while (!claim.exchanged && claim.old_value == 0u) {
+                claim = atomicCompareExchangeWeak(&search_result.claimed, 0u, 1u);
+            }
+            if (!claim.exchanged) {
                 return;
             }
+
+            search_result.index_lo = u32(index & 0xfffffffflu);
+            search_result.index_hi = u32(index >> 32u);
+            return;
         }
     }
 }
