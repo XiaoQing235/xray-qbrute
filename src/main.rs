@@ -80,7 +80,8 @@ fn run(args: Args) -> Result<(), SearchError> {
     let progress: ProgressReporter = Arc::new(move |count| callback_bar.inc(count));
     let start = Instant::now();
     let outcome = search::search(&config, args.backend, progress)?;
-    let elapsed = start.elapsed();
+    let wall_elapsed = start.elapsed();
+    let elapsed = outcome.search_elapsed.unwrap_or(wall_elapsed);
 
     for reason in &outcome.fallback_reasons {
         eprintln!("backend fallback: {reason}");
@@ -90,6 +91,12 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("Device: {device}");
     }
     println!("Backend: {}", outcome.backend_name);
+    if let Some(kernel_config) = &outcome.kernel_config {
+        println!("Kernel: {kernel_config}");
+    }
+    if let Some(tuning_elapsed) = outcome.tuning_elapsed {
+        println!("GPU tuning: {:.2}s", tuning_elapsed.as_secs_f64());
+    }
     let speed = outcome.processed as f64 / elapsed.as_secs_f64().max(f64::EPSILON) / 1e6;
 
     if let Some(hit) = outcome.hit {

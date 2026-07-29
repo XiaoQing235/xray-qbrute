@@ -51,6 +51,9 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
         backend_name: "scalar".to_owned(),
         device_name: None,
         fallback_reasons: Vec::new(),
+        search_elapsed: None,
+        kernel_config: None,
+        tuning_elapsed: None,
     }
 }
 

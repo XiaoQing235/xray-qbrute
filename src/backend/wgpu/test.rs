@@ -7,6 +7,10 @@ const CONFIG: CandidateConfig = CandidateConfig {
     commit: 0xeb366895,
     node_suffix: 0xebac62b9,
 };
+const ALTERNATE_CONFIG: CandidateConfig = CandidateConfig {
+    commit: 0x01234567,
+    node_suffix: 0x89abcdef,
+};
 
 #[cfg(target_os = "windows")]
 const TEST_BACKENDS: &[WgpuBackend] = &[WgpuBackend::Vulkan];
@@ -17,8 +21,8 @@ const TEST_BACKENDS: &[WgpuBackend] = &[WgpuBackend::Metal];
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const TEST_BACKENDS: &[WgpuBackend] = &[WgpuBackend::Vulkan];
 
-fn context_or_skip(backend: WgpuBackend) -> Option<GpuContext> {
-    match create_context(backend) {
+fn context_or_skip(backend: WgpuBackend, config: SearchConfig) -> Option<GpuContext> {
+    match create_context(backend, config) {
         Ok(context) => Some(context),
         Err(SearchError::Unavailable(reason)) => {
             eprintln!("Skipping {} GPU test: {reason}", backend.name());
@@ -31,20 +35,28 @@ fn context_or_skip(backend: WgpuBackend) -> Option<GpuContext> {
 #[test]
 fn gpu_hashes_match_scalar() {
     for &backend in TEST_BACKENDS {
-        let Some(context) = context_or_skip(backend) else {
-            continue;
-        };
+        for candidate_config in [CONFIG, ALTERNATE_CONFIG] {
+            let search_config = SearchConfig {
+                candidate: candidate_config,
+                max_index: 256,
+                leading_zero_bits: 64,
+            };
+            let Some(context) = context_or_skip(backend, search_config) else {
+                continue;
+            };
 
-        let bases = [0, 1 << 28, 1 << 30, 1 << 42, (1 << 58) - 256];
-        for base in bases {
-            let actual = context
-                .hash_first_words(base, 256, CONFIG)
-                .expect("GPU hash readback must succeed");
-            assert_eq!(actual.len(), 256);
-            for (offset, &actual_word) in actual.iter().enumerate() {
-                let index = base + offset as u64;
-                let expected = candidate::digest_word(&candidate::digest(index, CONFIG));
-                assert_eq!(actual_word, expected, "{} index {index}", backend.name());
+            let bases = [0, 1 << 28, 1 << 30, 1 << 42, (1 << 58) - 256];
+            for base in bases {
+                let actual = context
+                    .hash_first_words(base, 256)
+                    .expect("GPU hash readback must succeed");
+                assert_eq!(actual.len(), 256);
+                for (offset, &actual_word) in actual.iter().enumerate() {
+                    let index = base + offset as u64;
+                    let expected =
+                        candidate::digest_word(&candidate::digest(index, candidate_config));
+                    assert_eq!(actual_word, expected, "{} index {index}", backend.name());
+                }
             }
         }
     }
