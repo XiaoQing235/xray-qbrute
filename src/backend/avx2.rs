@@ -166,6 +166,9 @@ pub fn search(
                 backend_name: "avx2-4x".to_owned(),
                 device_name: None,
                 fallback_reasons: Vec::new(),
+                search_elapsed: None,
+                kernel_config: None,
+                tuning_elapsed: None,
             });
         }
 
@@ -179,6 +182,9 @@ pub fn search(
         backend_name: "avx2-4x".to_owned(),
         device_name: None,
         fallback_reasons: Vec::new(),
+        search_elapsed: None,
+        kernel_config: None,
+        tuning_elapsed: None,
     })
 }
 

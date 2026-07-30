@@ -104,7 +104,8 @@ fn gpu_search_returns_minimum_match() {
         leading_zero_bits: 0,
     };
 
-    let outcome = match search(&config, &progress) {
+    let backend = TEST_BACKENDS[0];
+    let outcome = match search(&config, backend, &progress) {
         Ok(outcome) => outcome,
         Err(SearchError::Unavailable(reason)) => {
             eprintln!("Skipping GPU test: {reason}");
@@ -120,7 +121,13 @@ fn gpu_search_returns_minimum_match() {
 
 #[test]
 fn gpu_session_reuses_resources() {
-    let session = match WgpuSearchSession::new() {
+    let config = SearchConfig {
+        candidate: CONFIG,
+        max_index: 256,
+        leading_zero_bits: 0,
+    };
+    let backend = TEST_BACKENDS[0];
+    let session = match WgpuSearchSession::new(backend, config) {
         Ok(session) => session,
         Err(SearchError::Unavailable(reason)) => {
             eprintln!("Skipping GPU test: {reason}");
@@ -129,12 +136,6 @@ fn gpu_session_reuses_resources() {
         Err(error) => panic!("GPU initialization failed unexpectedly: {error}"),
     };
     let progress: ProgressReporter = Arc::new(|_| {});
-    let config = SearchConfig {
-        candidate: CONFIG,
-        max_index: 256,
-        leading_zero_bits: 0,
-    };
-
     let first = session
         .search(&config, &progress)
         .expect("first warm search");

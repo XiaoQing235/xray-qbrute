@@ -7,6 +7,7 @@ use crate::candidate::CandidateConfig;
 
 use super::{BackendOutcome, ProgressReporter, SearchConfig, SearchError, SearchHit};
 
+const WARM_UP_CANDIDATES: u64 = 1 << 20;
 const MAX_BATCH: u64 = 1 << 28;
 const SEARCH_RESULT_SIZE: u64 = std::mem::size_of::<GpuResult>() as u64;
 const TUNING_DIFFICULTY_BITS: u32 = 64;
@@ -91,10 +92,8 @@ struct GpuParams {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuResult {
-    claimed: u32,
-    index_lo: u32,
-    index_hi: u32,
-    processed: u32,
+    min_offset: u32,
+    _pad: [u32; 3],
 }
 
 struct GpuContext {
@@ -120,65 +119,100 @@ struct SearchBuffers {
     bind_group: wgpu::BindGroup,
 }
 
+pub struct WgpuSearchSession {
+    context: GpuContext,
+    buffers: SearchBuffers,
+}
+
 pub fn search(
     config: &SearchConfig,
     selected_backend: WgpuBackend,
     progress: &ProgressReporter,
 ) -> Result<BackendOutcome, SearchError> {
-    let context = create_context(selected_backend, *config)?;
-    let buffers = context.create_search_buffers();
-    let mut base = 0u64;
-    let mut processed = 0u64;
-    let mut hit = None;
-    let search_start = Instant::now();
-    let max_batch = MAX_BATCH.min(
-        u64::from(context.max_workgroups_per_dimension)
-            * context.kernel_config.candidates_per_workgroup(),
-    );
+    WgpuSearchSession::new(selected_backend, *config)?.search(config, progress)
+}
 
-    while base < config.max_index {
-        let batch_count = (config.max_index - base).min(max_batch);
-        let result = context.run_search_batch(&buffers, base, batch_count)?;
-        let batch_processed = u64::from(result.processed);
-        if batch_processed > batch_count
-            || (result.claimed == 0 && batch_processed != batch_count)
-            || (result.claimed != 0 && batch_processed == 0)
-        {
-            return Err(SearchError::Runtime(format!(
-                "GPU shader reported {batch_processed} processed candidates for a {batch_count}-candidate batch"
-            )));
-        }
-        processed += batch_processed;
-        progress(batch_processed);
+impl WgpuSearchSession {
+    pub fn new(selected_backend: WgpuBackend, config: SearchConfig) -> Result<Self, SearchError> {
+        let context = create_context(selected_backend, config)?;
+        let buffers = context.create_search_buffers();
 
-        if result.claimed != 0 {
-            let index = (u64::from(result.index_hi) << 32) | u64::from(result.index_lo);
-            if index < base || index >= base + batch_count {
-                return Err(SearchError::Runtime(format!(
-                    "GPU shader returned index {index} outside batch [{base}, {})",
-                    base + batch_count
-                )));
-            }
-            hit = Some(SearchHit { index });
-            break;
-        }
-
-        base += batch_count;
+        Ok(Self { context, buffers })
     }
 
-    Ok(BackendOutcome {
-        hit,
-        processed,
-        backend_name: context.backend_name.to_owned(),
-        device_name: Some(context.adapter_name),
-        fallback_reasons: Vec::new(),
-        search_elapsed: Some(search_start.elapsed()),
-        kernel_config: Some(format!(
-            "workgroup={}, candidates/thread={}",
-            context.kernel_config.workgroup_size, context.kernel_config.candidates_per_invocation
-        )),
-        tuning_elapsed: Some(context.tuning_elapsed),
-    })
+    pub fn warm_up(&self) -> Result<(), SearchError> {
+        self.context
+            .run_search_batch(&self.buffers, 0, WARM_UP_CANDIDATES)
+            .map(|_| ())
+    }
+
+    pub fn search(
+        &self,
+        config: &SearchConfig,
+        progress: &ProgressReporter,
+    ) -> Result<BackendOutcome, SearchError> {
+        let mut base = 0u64;
+        let mut evaluated = 0u64;
+        let search_start = Instant::now();
+        let max_batch = MAX_BATCH.min(
+            u64::from(self.context.max_workgroups_per_dimension)
+                * self.context.kernel_config.candidates_per_workgroup(),
+        );
+
+        while base < config.max_index {
+            let batch_count = (config.max_index - base).min(max_batch);
+            let result = self
+                .context
+                .run_search_batch(&self.buffers, base, batch_count)?;
+
+            if result.min_offset != u32::MAX {
+                if u64::from(result.min_offset) >= batch_count {
+                    return Err(SearchError::Runtime(format!(
+                        "GPU shader returned offset {} outside a {batch_count}-candidate batch",
+                        result.min_offset
+                    )));
+                }
+                let index = base + result.min_offset as u64;
+                let processed = index + 1;
+                progress(processed - base);
+                return Ok(BackendOutcome {
+                    hit: Some(SearchHit { index }),
+                    processed,
+                    evaluated: evaluated + batch_count,
+                    backend_name: self.context.backend_name.to_owned(),
+                    device_name: Some(self.context.adapter_name.clone()),
+                    fallback_reasons: Vec::new(),
+                    search_elapsed: Some(search_start.elapsed()),
+                    kernel_config: Some(format!(
+                        "workgroup={}, candidates/thread={}",
+                        self.context.kernel_config.workgroup_size,
+                        self.context.kernel_config.candidates_per_invocation
+                    )),
+                    tuning_elapsed: Some(self.context.tuning_elapsed),
+                });
+            }
+
+            evaluated += batch_count;
+            progress(batch_count);
+            base += batch_count;
+        }
+
+        Ok(BackendOutcome {
+            hit: None,
+            processed: config.max_index,
+            evaluated,
+            backend_name: self.context.backend_name.to_owned(),
+            device_name: Some(self.context.adapter_name.clone()),
+            fallback_reasons: Vec::new(),
+            search_elapsed: Some(search_start.elapsed()),
+            kernel_config: Some(format!(
+                "workgroup={}, candidates/thread={}",
+                self.context.kernel_config.workgroup_size,
+                self.context.kernel_config.candidates_per_invocation
+            )),
+            tuning_elapsed: Some(self.context.tuning_elapsed),
+        })
+    }
 }
 
 fn create_context(
@@ -501,9 +535,12 @@ fn run_search_pipeline(
     backend_name: &str,
 ) -> Result<GpuResult, SearchError> {
     let params = make_params(base, candidate_count);
-    let zero_result = GpuResult::zeroed();
+    let initial_result = GpuResult {
+        min_offset: u32::MAX,
+        _pad: [0; 3],
+    };
     queue.write_buffer(&buffers.params, 0, bytemuck::bytes_of(&params));
-    queue.write_buffer(&buffers.result, 0, bytemuck::bytes_of(&zero_result));
+    queue.write_buffer(&buffers.result, 0, bytemuck::bytes_of(&initial_result));
 
     let workgroups = candidate_count.div_ceil(kernel.candidates_per_workgroup()) as u32;
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -706,13 +743,10 @@ fn validate_tuning_result(
     expected_candidates: u64,
     kernel: KernelConfig,
 ) -> Result<(), SearchError> {
-    if result.claimed != 0 || u64::from(result.processed) != expected_candidates {
+    if result.min_offset != u32::MAX {
         return Err(SearchError::Runtime(format!(
-            "GPU kernel {}x{} processed {} of {expected_candidates} tuning candidates (claimed={})",
-            kernel.workgroup_size,
-            kernel.candidates_per_invocation,
-            result.processed,
-            result.claimed,
+            "GPU kernel {}x{} unexpectedly matched offset {} while tuning {expected_candidates} candidates",
+            kernel.workgroup_size, kernel.candidates_per_invocation, result.min_offset,
         )));
     }
     Ok(())

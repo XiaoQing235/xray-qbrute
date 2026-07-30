@@ -12,10 +12,10 @@ struct Params {
 };
 
 struct SearchResult {
-    claimed: atomic<u32>,
-    index_lo: u32,
-    index_hi: u32,
-    processed: atomic<u32>,
+    min_offset: atomic<u32>,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0)
@@ -26,8 +26,6 @@ var<storage, read_write> search_result: SearchResult;
 
 @group(0) @binding(2)
 var<storage, read_write> hash_results: array<u64>;
-
-var<workgroup> search_workgroup_active: u32;
 
 fn rotr(value: u64, amount: u32) -> u64 {
     return (value >> amount) | (value << (64u - amount));
@@ -100,33 +98,17 @@ fn matches_leading_zero_bits(word: u64) -> bool {
     if (LEADING_ZERO_BITS > 64u) {
         return false;
     }
-    return (word >> (64u - LEADING_ZERO_BITS)) == 0lu;
+    return (word >> ((64u - LEADING_ZERO_BITS) & 63u)) == 0lu;
 }
 
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn search_main(
     @builtin(global_invocation_id) gid: vec3<u32>,
-    @builtin(local_invocation_index) local_id: u32,
-    @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
-    // Admit the whole workgroup together so queued groups can stop after a hit.
-    if (local_id == 0u) {
-        let candidates_per_workgroup = WORKGROUP_SIZE * CANDIDATES_PER_INVOCATION;
-        let group_start = workgroup_id.x * candidates_per_workgroup;
-        let group_count = min(candidates_per_workgroup, params.candidate_count - group_start);
-        search_workgroup_active = select(0u, 1u, atomicLoad(&search_result.claimed) == 0u);
-        if (search_workgroup_active != 0u) {
-            atomicAdd(&search_result.processed, group_count);
-        }
-    }
-    workgroupBarrier();
-    if (search_workgroup_active == 0u) {
-        return;
-    }
-
     let base = (u64(params.base_hi) << 32u) | u64(params.base_lo);
     let invocation_start = base + u64(gid.x) * u64(CANDIDATES_PER_INVOCATION);
 
+    var best_local_offset: u32 = 0xFFFFFFFFu;
     for (var offset = 0u; offset < CANDIDATES_PER_INVOCATION; offset = offset + 1u) {
         let local_index = gid.x * CANDIDATES_PER_INVOCATION + offset;
         if (local_index >= params.candidate_count) {
@@ -135,16 +117,14 @@ fn search_main(
 
         let index = invocation_start + u64(offset);
         if (matches_leading_zero_bits(sha512_first_word(index))) {
-            var claim = atomicCompareExchangeWeak(&search_result.claimed, 0u, 1u);
-            while (!claim.exchanged && claim.old_value == 0u) {
-                claim = atomicCompareExchangeWeak(&search_result.claimed, 0u, 1u);
-            }
-            if (claim.exchanged) {
-                search_result.index_lo = u32(index & 0xfffffffflu);
-                search_result.index_hi = u32(index >> 32u);
-            }
+            best_local_offset = offset;
             break;
         }
+    }
+
+    if (best_local_offset != 0xFFFFFFFFu) {
+        let global_offset = gid.x * CANDIDATES_PER_INVOCATION + best_local_offset;
+        atomicMin(&search_result.min_offset, global_offset);
     }
 }
 

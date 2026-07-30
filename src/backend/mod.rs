@@ -24,6 +24,7 @@ pub struct SearchHit {
 pub struct BackendOutcome {
     pub hit: Option<SearchHit>,
     pub processed: u64,
+    pub evaluated: u64,
     pub backend_name: String,
     pub device_name: Option<String>,
     pub fallback_reasons: Vec<String>,
