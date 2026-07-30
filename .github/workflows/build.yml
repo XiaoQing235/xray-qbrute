@@ -8,44 +8,38 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x86_64
-            os: ubuntu-latest
-            artifact: xray-qbrute-linux-x86_64
-            binary: target/release/xray-qbrute
-          - name: Windows x86_64
-            os: windows-latest
-            artifact: xray-qbrute-windows-x86_64
-            binary: target/release/xray-qbrute.exe
-          - name: macOS x86_64
-            os: macos-15-intel
-            artifact: xray-qbrute-macos-x86_64
-            binary: target/release/xray-qbrute
-          - name: macOS arm64
-            os: macos-14
-            artifact: xray-qbrute-macos-arm64
-            binary: target/release/xray-qbrute
+    name: Build
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - name: Build packages
+        run: goreleaser build --snapshot --clean
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.binary }}
+          name: xray-qbrute-builds
+          path: dist/*
           retention-days: 7
