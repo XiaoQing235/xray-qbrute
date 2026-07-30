@@ -75,11 +75,12 @@ fn run(args: Args) -> Result<(), SearchError> {
     println!("Backend request: {}", args.backend);
     println!("Range: [0, {})", config.max_index);
 
+    let prepared = search::prepare(&config, args.backend)?;
     let progress_bar = make_progress_bar(config.max_index, args.no_progress);
     let callback_bar = progress_bar.clone();
     let progress: ProgressReporter = Arc::new(move |count| callback_bar.inc(count));
     let start = Instant::now();
-    let outcome = search::search(&config, args.backend, progress)?;
+    let outcome = prepared.search(&config, &progress)?;
     let wall_elapsed = start.elapsed();
     let elapsed = outcome.search_elapsed.unwrap_or(wall_elapsed);
 
@@ -97,7 +98,7 @@ fn run(args: Args) -> Result<(), SearchError> {
     if let Some(tuning_elapsed) = outcome.tuning_elapsed {
         println!("GPU tuning: {:.2}s", tuning_elapsed.as_secs_f64());
     }
-    let speed = outcome.processed as f64 / elapsed.as_secs_f64().max(f64::EPSILON) / 1e6;
+    let speed = outcome.evaluated as f64 / elapsed.as_secs_f64().max(f64::EPSILON) / 1e6;
 
     if let Some(hit) = outcome.hit {
         let bytes = candidate::candidate_bytes(hit.index, config.candidate);
@@ -116,12 +117,14 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("answer    : /answer {uuid}");
         println!("hash[:10] : {}", hex::encode(&hash[..10]));
         println!("processed : {} candidates", outcome.processed);
+        println!("evaluated : {} candidates", outcome.evaluated);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {speed:.1} M/s");
         progress_bar.abandon_with_message("Found!");
     } else {
         println!("\n===== NOT FOUND =====");
         println!("searched  : {} candidates", outcome.processed);
+        println!("evaluated : {} candidates", outcome.evaluated);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {speed:.1} M/s");
         progress_bar.finish_with_message("Not found");
