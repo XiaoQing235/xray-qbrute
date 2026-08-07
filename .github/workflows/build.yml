@@ -17,9 +17,10 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu
+          components: rust-src
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -35,7 +36,7 @@ jobs:
           install-only: true
 
       - name: Build packages
-        run: goreleaser build --snapshot --clean
+        run: goreleaser build --snapshot --clean --parallelism 2
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -68,9 +69,7 @@ jobs:
           node-version: 24
 
       - name: Install wasm-bindgen
-        uses: jetli/wasm-bindgen-action@v3
-        with:
-          version: '0.2.126'
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
 
       - name: Build browser packages
         run: node scripts/build.ts wasm

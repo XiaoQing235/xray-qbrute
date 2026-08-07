@@ -13,7 +13,6 @@ export default defineConfig(({ mode }) => ({
     Components({ dts: 'src/components.d.ts', resolvers: [ElementPlusResolver()] }),
   ],
   build: {
-    minify: 'esbuild',
     rolldownOptions: {
       output: {
         codeSplitting: {

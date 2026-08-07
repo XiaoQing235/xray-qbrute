@@ -44,9 +44,7 @@ jobs:
           workspaces: '. -> target'
 
       - name: Install wasm-bindgen
-        uses: jetli/wasm-bindgen-action@v3
-        with:
-          version: '0.2.126'
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
 
       - name: Build wasm packages
         run: node scripts/build.ts wasm
