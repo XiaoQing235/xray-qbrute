@@ -386,7 +386,6 @@ fn create_in_memory_pipeline_cache(device: &wgpu::Device) -> Option<wgpu::Pipeli
         return None;
     }
 
-    // No external bytes enter the unsafe cache API; this cache lives only for pipeline creation.
     let cache = unsafe {
         device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
             label: Some("xray-qbrute pipeline cache"),

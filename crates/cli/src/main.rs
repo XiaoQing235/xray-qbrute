@@ -3,9 +3,9 @@ use std::time::Instant;
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use xray_qbrute::backend::{ProgressReporter, SearchConfig, SearchError};
-use xray_qbrute::candidate::{self, CandidateConfig, DEFAULT_DIFFICULTY_BITS, MAX_UUID_INDEX};
-use xray_qbrute::search::{self, BackendKind};
+use xray_qbrute_core::backend::{ProgressReporter, SearchConfig, SearchError};
+use xray_qbrute_core::candidate::{self, CandidateConfig, DEFAULT_DIFFICULTY_BITS, MAX_UUID_INDEX};
+use xray_qbrute_core::search::{self, BackendKind};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

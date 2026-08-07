@@ -31,7 +31,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: '~> v2'
           install-only: true
 
       - name: Build packages
@@ -42,4 +42,45 @@ jobs:
         with:
           name: xray-qbrute-builds
           path: dist/*
+          retention-days: 7
+
+  web:
+    name: WebAssembly browser build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-web
+          workspaces: '. -> target'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install wasm-bindgen
+        uses: jetli/wasm-bindgen-action@v3
+        with:
+          version: '0.2.126'
+
+      - name: Build browser packages
+        run: node scripts/build.ts wasm
+
+      - name: Verify browser artifact
+        run: node scripts/build.ts verify
+
+      - name: Upload browser artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: xray-qbrute-web
+          path: web/
           retention-days: 7

@@ -1,0 +1,17 @@
+[package]
+name = "xray-qbrute-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "xray-qbrute"
+path = "src/main.rs"
+
+[dependencies]
+xray-qbrute-core = { path = "../core" }
+clap.workspace = true
+indicatif.workspace = true
+hex.workspace = true
+rayon.workspace = true

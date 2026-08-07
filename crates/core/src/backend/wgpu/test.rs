@@ -148,3 +148,75 @@ fn gpu_session_reuses_resources() {
     assert_eq!(second.processed, first.processed);
     assert_eq!(second.evaluated, first.evaluated);
 }
+
+#[test]
+fn browser_webgpu_shader_matches_scalar_minimums() {
+    let backend = TEST_BACKENDS[0];
+    let initialization = SearchConfig {
+        candidate: CONFIG,
+        max_index: 4_096,
+        leading_zero_bits: 8,
+    };
+    let Some(context) = context_or_skip(backend, initialization) else {
+        return;
+    };
+    let shader = context
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xray-qbrute browser SHA-512 WGSL test"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!(concat!(env!("OUT_DIR"), "/sha512_web.wgsl")).into(),
+            ),
+        });
+    let layout = context
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xray-qbrute browser search test layout"),
+            entries: &[storage_binding(0, true), storage_binding(1, false)],
+        });
+    let pipeline_layout = context
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xray-qbrute browser search test pipeline layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+    let kernel = KernelConfig::new(128, 8);
+    let buffers = create_search_buffers(&context.device, &layout);
+
+    for candidate_config in [CONFIG, ALTERNATE_CONFIG] {
+        for leading_zero_bits in [0, 8, 12] {
+            let pipeline = create_search_pipeline(
+                &context.device,
+                &shader,
+                &pipeline_layout,
+                candidate_config,
+                leading_zero_bits,
+                kernel,
+                None,
+                "xray-qbrute browser search test pipeline",
+            );
+            for base in [0, 1 << 28, 1 << 30, 1 << 42, (1 << 58) - 4_096] {
+                let count = 4_096;
+                let expected = (base..base + count).find(|&index| {
+                    let word = candidate::digest_word(&candidate::digest(index, candidate_config));
+                    candidate::matches_leading_zero_bits(word, leading_zero_bits)
+                });
+                let result = run_search_pipeline(
+                    &context.device,
+                    &context.queue,
+                    &pipeline,
+                    kernel,
+                    &buffers,
+                    base,
+                    count,
+                    "browser-webgpu-test",
+                )
+                .expect("browser-compatible WebGPU shader must dispatch and read back");
+                let actual =
+                    (result.min_offset != u32::MAX).then(|| base + u64::from(result.min_offset));
+                assert_eq!(actual, expected, "base={base}, bits={leading_zero_bits}");
+            }
+        }
+    }
+}

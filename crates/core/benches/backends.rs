@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use xray_qbrute::backend::{self, ProgressReporter, SearchConfig};
-use xray_qbrute::candidate::CandidateConfig;
-use xray_qbrute::search::{self, BackendKind};
+use xray_qbrute_core::backend::{self, ProgressReporter, SearchConfig};
+use xray_qbrute_core::candidate::CandidateConfig;
+use xray_qbrute_core::search::{self, BackendKind};
 
 const CANDIDATE_COUNT: u64 = 1 << 20;
 const CONFIG: SearchConfig = SearchConfig {
