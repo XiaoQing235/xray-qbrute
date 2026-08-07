@@ -24,9 +24,6 @@ jobs:
   deploy:
     name: Build and deploy to GitHub Pages
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
