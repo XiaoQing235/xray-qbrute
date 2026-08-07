@@ -5,8 +5,8 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileURLToPath, URL } from 'node:url'
 
-export default defineConfig(({ mode }) => ({
-  base: mode === 'production' ? '/xray-qbrute/' : '/',
+export default defineConfig({
+  base: '/',
   plugins: [
     vue(),
     AutoImport({ dts: 'src/auto-imports.d.ts', resolvers: [ElementPlusResolver()] }),
@@ -36,4 +36,4 @@ export default defineConfig(({ mode }) => ({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
-}))
+})
