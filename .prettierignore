@@ -1,0 +1,15 @@
+target/
+node_modules/
+web/node_modules/
+web/dist/
+web/pkg/
+web/.vite/
+web/public/pkg/
+web/src/**/*.vue
+.tmp-dl/
+.omo/
+.codegraph/
+Cargo.lock
+pnpm-lock.yaml
+LICENSE
+*.wasm
