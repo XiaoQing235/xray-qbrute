@@ -5,7 +5,14 @@ web/dist/
 web/pkg/
 web/.vite/
 web/public/pkg/
+public/pkg/
 web/src/**/*.vue
+src/**/*.vue
+web/pnpm-lock.yaml
+web/src/auto-imports.d.ts
+src/auto-imports.d.ts
+web/src/components.d.ts
+src/components.d.ts
 .tmp-dl/
 .omo/
 .codegraph/

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vite/
+public/pkg/
+src/**/*.vue
+pnpm-lock.yaml
+src/auto-imports.d.ts
+src/components.d.ts
+*.wasm
