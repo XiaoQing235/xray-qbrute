@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use crate::candidate::CandidateConfig;
 
-#[cfg(feature = "scalar")]
-pub mod scalar;
 #[cfg(feature = "avx2")]
 pub mod avx2;
-#[cfg(feature = "wgpu")]
-pub mod wgpu;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+#[cfg(feature = "scalar")]
+pub mod scalar;
+#[cfg(feature = "wgpu")]
+pub mod wgpu;
 
 pub const SEARCH_CHUNK_SIZE: u64 = 1 << 16;
 
@@ -40,7 +40,6 @@ pub struct BackendOutcome {
 }
 
 pub type ProgressReporter = Arc<dyn Fn(u64) + Send + Sync>;
-
 
 pub fn hit_probability(attempts: u64, leading_zero_bits: u32) -> f64 {
     let work_factor = 2f64.powi(leading_zero_bits as i32);

@@ -1,11 +1,11 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use xray_qbrute_core::backend::{
-    expected_search_seconds, hit_probability, ProgressReporter, SearchConfig, SearchError,
+    ProgressReporter, SearchConfig, SearchError, expected_search_seconds, hit_probability,
 };
 use xray_qbrute_core::candidate::{self, CandidateConfig, DEFAULT_DIFFICULTY_BITS, MAX_UUID_INDEX};
 use xray_qbrute_core::search::{self, BackendKind};
@@ -13,7 +13,10 @@ use xray_qbrute_core::search::{self, BackendKind};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(value_name = "HEX8", help = "Node suffix (last 8 hex digits of the node ID)")]
+    #[arg(
+        value_name = "HEX8",
+        help = "Node suffix (last 8 hex digits of the node ID)"
+    )]
     node_suffix: String,
 
     #[arg(long, default_value = "eb366895", value_name = "HEX8")]
@@ -111,8 +114,8 @@ fn run(args: Args) -> Result<(), SearchError> {
     let interrupt_start = config.start_index;
     let interrupt_bar = progress_bar.clone();
     ctrlc::set_handler(move || {
-        let next = (interrupt_start + interrupt_total.load(Ordering::Relaxed))
-            & (MAX_UUID_INDEX - 1);
+        let next =
+            (interrupt_start + interrupt_total.load(Ordering::Relaxed)) & (MAX_UUID_INDEX - 1);
         interrupt_bar.suspend(|| {
             eprintln!(
                 "\nInterrupted after {} candidates.\nResume from: --start {next}  (0x{next:x})",
@@ -144,10 +147,8 @@ fn run(args: Args) -> Result<(), SearchError> {
     }
     let speed = outcome.evaluated as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
 
-    let probability =
-        hit_probability(outcome.evaluated, config.leading_zero_bits);
-    let expected_seconds =
-        expected_search_seconds(config.leading_zero_bits, speed);
+    let probability = hit_probability(outcome.evaluated, config.leading_zero_bits);
+    let expected_seconds = expected_search_seconds(config.leading_zero_bits, speed);
 
     if let Some(hit) = outcome.hit {
         let bytes = candidate::candidate_bytes(hit.index, config.candidate);
@@ -169,10 +170,7 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("evaluated : {} candidates", outcome.evaluated);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {}", format_rate(speed));
-        println!(
-            "P(hit in range)   : {:.4}%",
-            probability * 100.0
-        );
+        println!("P(hit in range)   : {:.4}%", probability * 100.0);
         println!(
             "expected (1 hit)  : ~{:.1}s at current rate ({})",
             expected_seconds,
@@ -185,10 +183,7 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("evaluated : {} candidates", outcome.evaluated);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {}", format_rate(speed));
-        println!(
-            "P(hit in range)   : {:.4}%",
-            probability * 100.0
-        );
+        println!("P(hit in range)   : {:.4}%", probability * 100.0);
         println!(
             "expected to hit   : ~{:.1}s at current rate ({})",
             expected_seconds,

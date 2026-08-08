@@ -12,7 +12,12 @@ const CUDA_TEMPLATE: &str = "src/shaders/sha512_search.cu";
 const ROUND_MARKER: &str = "    // @SHA512_UNROLLED_ROUNDS@";
 
 fn main() {
-    for path in [NATIVE_TEMPLATE, WEB_TEMPLATE, CUDA_TEMPLATE, "src/sha512_constants.rs"] {
+    for path in [
+        NATIVE_TEMPLATE,
+        WEB_TEMPLATE,
+        CUDA_TEMPLATE,
+        "src/sha512_constants.rs",
+    ] {
         println!("cargo:rerun-if-changed={path}");
     }
     println!("cargo:rerun-if-changed=build.rs");
@@ -38,7 +43,8 @@ fn main() {
 fn generate_shader(template_path: &str, output_path: PathBuf, rounds: String) {
     let template = fs::read_to_string(template_path).expect("read shader template");
     assert_eq!(template.matches(ROUND_MARKER).count(), 1);
-    fs::write(output_path, template.replace(ROUND_MARKER, &rounds)).expect("write generated shader");
+    fs::write(output_path, template.replace(ROUND_MARKER, &rounds))
+        .expect("write generated shader");
 }
 
 fn native_rounds() -> String {
