@@ -1,7 +1,5 @@
 {
   "name": "xray-qbrute-web",
-  "private": true,
-  "version": "0.1.0",
   "packageManager": "pnpm@11.18.0",
   "type": "module",
   "scripts": {
