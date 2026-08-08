@@ -25,6 +25,12 @@ struct Args {
     #[arg(long, value_enum, default_value_t = BackendKind::Auto)]
     backend: BackendKind,
 
+    #[arg(long, default_value_t = DEFAULT_DIFFICULTY_BITS, value_name = "BITS")]
+    difficulty: u32,
+
+    #[arg(long, default_value_t = 0, value_name = "COUNT")]
+    threads: usize,
+
     #[arg(long, default_value_t = 0, value_name = "COUNT")]
     start: u64,
 
@@ -45,17 +51,16 @@ fn parse_hex_u32(name: &str, value: &str) -> Result<u32, String> {
         .map_err(|_| format!("{name} contains a non-hexadecimal character"))
 }
 
-fn make_progress_bar(max_index: u64, hidden: bool) -> ProgressBar {
+fn make_progress_bar(hidden: bool) -> ProgressBar {
     if hidden {
         return ProgressBar::hidden();
     }
 
-    let progress = ProgressBar::new(max_index);
+    // The bar's fill represents P(hit in range), not raw scan position.
+    let progress = ProgressBar::new(1000);
     progress.set_style(
         ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}) {msg}",
-            )
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {msg}")
             .expect("progress template is static and valid"),
     );
     progress
@@ -72,6 +77,18 @@ fn format_rate(rate_per_second: f64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
+fn format_integer(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (position, byte) in digits.bytes().enumerate() {
+        if position > 0 && (digits.len() - position).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(char::from(byte));
+    }
+    grouped
+}
+
 fn run(args: Args) -> Result<(), SearchError> {
     let commit =
         parse_hex_u32("--commit-last8", &args.commit_last8).map_err(SearchError::InvalidConfig)?;
@@ -86,7 +103,7 @@ fn run(args: Args) -> Result<(), SearchError> {
         candidate,
         start_index: args.start,
         max_index: args.max_index,
-        leading_zero_bits: DEFAULT_DIFFICULTY_BITS,
+        leading_zero_bits: args.difficulty,
     };
 
     println!("===== xray-qbrute =====");
@@ -102,12 +119,22 @@ fn run(args: Args) -> Result<(), SearchError> {
     let processed_total = Arc::new(AtomicU64::new(0));
 
     let prepared = search::prepare(&config, args.backend)?;
-    let progress_bar = make_progress_bar(config.max_index - config.start_index, args.no_progress);
+    let progress_bar = make_progress_bar(args.no_progress);
     let callback_bar = progress_bar.clone();
     let callback_total = Arc::clone(&processed_total);
+    let callback_start = Instant::now();
     let progress: ProgressReporter = Arc::new(move |count| {
         callback_total.fetch_add(count, Ordering::Relaxed);
-        callback_bar.inc(count);
+        let total = callback_total.load(Ordering::Relaxed);
+        let probability = hit_probability(total, config.leading_zero_bits);
+        callback_bar.set_position((probability * 1000.0).min(999.999) as u64);
+        let rate = total as f64 / callback_start.elapsed().as_secs_f64().max(f64::EPSILON);
+        callback_bar.set_message(format!(
+            "{} candidates · P(hit) {:.2}% · {}",
+            format_integer(total),
+            probability * 100.0,
+            format_rate(rate)
+        ));
     });
 
     let interrupt_total = Arc::clone(&processed_total);
@@ -166,7 +193,7 @@ fn run(args: Args) -> Result<(), SearchError> {
         println!("UUID      : {uuid}");
         println!("answer    : /answer {uuid}");
         println!("hash[:10] : {}", hex::encode(&hash[..10]));
-        println!("processed : {} candidates", outcome.processed);
+        println!("hit       : index {}", hit.index);
         println!("evaluated : {} candidates", outcome.evaluated);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {}", format_rate(speed));
@@ -176,10 +203,10 @@ fn run(args: Args) -> Result<(), SearchError> {
             expected_seconds,
             format_rate(speed)
         );
-        progress_bar.abandon_with_message("Found!");
+        progress_bar.set_position(1000);
+        progress_bar.finish_with_message("Found!");
     } else {
         println!("\n===== NOT FOUND =====");
-        println!("searched  : {} candidates", outcome.processed);
         println!("evaluated : {} candidates", outcome.evaluated);
         println!("time      : {:.2}s", elapsed.as_secs_f64());
         println!("rate      : {}", format_rate(speed));
@@ -199,6 +226,19 @@ fn run(args: Args) -> Result<(), SearchError> {
 
 fn main() {
     let args = Args::parse();
+    if args.difficulty > 64 {
+        eprintln!("error: --difficulty must be in 0..=64");
+        std::process::exit(2);
+    }
+    if args.threads > 0
+        && rayon::ThreadPoolBuilder::new()
+            .num_threads(args.threads)
+            .build_global()
+            .is_err()
+    {
+        eprintln!("error: failed to configure --threads {}", args.threads);
+        std::process::exit(2);
+    }
     if let Err(error) = run(args) {
         eprintln!("error: {error}");
         std::process::exit(2);
@@ -207,7 +247,16 @@ fn main() {
 
 #[cfg(test)]
 mod test {
+    use super::format_integer;
     use super::format_rate;
+
+    #[test]
+    fn integer_grouping_adds_thousands_separators() {
+        assert_eq!(format_integer(0), "0");
+        assert_eq!(format_integer(999), "999");
+        assert_eq!(format_integer(1000), "1,000");
+        assert_eq!(format_integer(1_000_000), "1,000,000");
+    }
 
     #[test]
     fn rate_below_1000_stays_in_hash_per_second() {
