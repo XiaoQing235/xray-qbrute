@@ -37,11 +37,6 @@ export function useSearchWorker() {
     elapsedMs: 0,
   })
   const difficulty = ref(0)
-  const progressPercent = computed(() => {
-    const m = metrics.value
-    if (m.maxIndex === 0n) return 0
-    return Number((m.processed * 10000n) / m.maxIndex) / 100
-  })
 
   const hitProbability = computed(() => {
     const bits = difficulty.value
@@ -51,6 +46,13 @@ export function useSearchWorker() {
     const workFactor = Math.pow(2, bits)
     return 1 - Math.exp(-attempts / workFactor)
   })
+
+  const progressPercent = computed(() => {
+    const p = hitProbability.value
+    if (p >= 1) return 100
+    return p * 100
+  })
+
 
   const expectedSeconds = computed(() => {
     const bits = difficulty.value

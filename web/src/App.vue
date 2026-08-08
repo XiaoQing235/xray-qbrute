@@ -3,12 +3,12 @@ import { ref, computed, onUnmounted } from "vue"
 import ModeToggle from "@/components/ModeToggle.vue"
 import { useSearchForm } from "@/composables/useSearchForm"
 import { useSearchWorker } from "@/composables/useSearchWorker"
-import { formatInteger, formatElapsed, formatRate, formatProbability, formatExpectedDuration } from "@/composables/useFormatters"
+import { formatInteger, formatElapsed, formatRate, formatExpectedDuration } from "@/composables/useFormatters"
 import { GLYPHS } from "@/constants/glyphs"
 
 const {
   state, stateLabel, activeBackend, device,
-  metrics, progressPercent, hitProbability, expectedSeconds, fallbacks, runtimeMessage,
+  metrics, progressPercent, expectedSeconds, fallbacks, runtimeMessage,
   result, doneKind, running,
   simdSupported, detectedThreads,
   start, stop, dispose,
@@ -151,19 +151,18 @@ async function copyAnswer() {
         </template>
 
         <div class="progress-row">
-          <span>Verified prefix</span>
+          <span>P (hit in range)</span>
           <span class="mono">{{ progressPercent.toFixed(2) }}%</span>
         </div>
         <el-progress :percentage="progressPercent" :show-text="false" :stroke-width="8" />
 
         <dl class="metrics-grid">
-          <div><dt>Processed</dt><dd class="mono">{{ formatInteger(metrics.processed) }}</dd></div>
           <div><dt>Evaluated</dt><dd class="mono">{{ formatInteger(metrics.evaluated) }}</dd></div>
           <div><dt>Elapsed</dt><dd class="mono">{{ formatElapsed(metrics.elapsedMs) }}</dd></div>
           <div><dt>Rate</dt><dd class="mono">{{ formatRate(metrics.evaluated, metrics.elapsedMs) }}</dd></div>
-          <div><dt>P (hit in range)</dt><dd class="mono">{{ formatProbability(hitProbability) }}</dd></div>
           <div><dt>Expected</dt><dd class="mono">{{ formatExpectedDuration(expectedSeconds) }}</dd></div>
         </dl>
+
 
         <el-alert v-if="fallbacks.length > 0" class="fallback-alert" type="info" :closable="false" show-icon>
           <template #title>Fallback trace</template>
