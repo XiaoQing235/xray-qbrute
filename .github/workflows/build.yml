@@ -69,7 +69,7 @@ jobs:
           node-version: 24
 
       - name: Install wasm-bindgen
-        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
 
       - name: Build browser packages
         run: node scripts/build.ts wasm
@@ -77,9 +77,3 @@ jobs:
       - name: Verify browser artifact
         run: node scripts/build.ts verify
 
-      - name: Upload browser artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: xray-qbrute-web
-          path: web/
-          retention-days: 7

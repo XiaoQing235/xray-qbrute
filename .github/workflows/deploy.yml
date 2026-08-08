@@ -4,10 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'crates/**'
+      - 'scripts/**'
       - 'web/**'
       - 'Cargo.toml'
-
+      - 'Cargo.lock'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -41,7 +42,7 @@ jobs:
           workspaces: '. -> target'
 
       - name: Install wasm-bindgen
-        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
 
       - name: Build wasm packages
         run: node scripts/build.ts wasm
