@@ -6,7 +6,7 @@ function glyph(name: string): string {
     if (import.meta.env.DEV) {
       console.warn(`[glyphs] NF icon "${name}" not found in @m234/nerd-fonts`)
     }
-    return ''
+    return GLYPHS.error
   }
   return entry.value
 }
@@ -26,4 +26,5 @@ export const GLYPHS = {
   ban: glyph('nf-fa-ban'),
   alertTriangle: glyph('nf-fa-exclamation_triangle'),
   github: glyph('nf-fa-github'),
+  error: glyph('nf-cod-error'),
 } as const

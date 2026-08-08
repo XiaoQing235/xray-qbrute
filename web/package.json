@@ -9,6 +9,11 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "dependencies": {
     "@m234/nerd-fonts": "^0.5.2",
     "@vueuse/core": "^14.4.0",
@@ -19,6 +24,7 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "@vitejs/plugin-vue": "^6.0.8",
+    "esbuild": "^0.28.1",
     "prettier": "^3.9.6",
     "sass": "^1.102.0",
     "typescript": "^6.0.3",

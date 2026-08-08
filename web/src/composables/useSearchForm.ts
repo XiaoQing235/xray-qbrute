@@ -12,10 +12,10 @@ export function useSearchForm(options: SearchFormOptions) {
   const form = reactive({
     commit: 'eb366895',
     node: '',
-    difficulty: '20',
-    maxIndex: '',
+    difficulty: '33',
+    maxIndex: '288230376151711744',
     backend: 'auto' as Backend,
-    threads: '0',
+    threads: String(options.detectedThreads),
   })
   const formError = ref('')
 
@@ -33,10 +33,6 @@ export function useSearchForm(options: SearchFormOptions) {
       input.removeAttribute('aria-invalid')
     }
 
-    if (form.node.trim() === '') {
-      formError.value = 'Node suffix is required.'
-      return
-    }
     if (!wasmThreadsAvailable()) {
       formError.value = WASM_THREADS_ERROR
       return

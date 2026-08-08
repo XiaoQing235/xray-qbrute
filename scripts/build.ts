@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { artifactFlavor, wasmThreadsAvailable } from '../web/public/wasm-runtime.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -150,6 +150,7 @@ function buildWasm() {
     run('cargo', [
       'build',
       '--release',
+      '-Zbuild-std=panic_abort,std',
       '-p',
       wasmLib,
       '--lib',
@@ -225,12 +226,40 @@ function buildWeb() {
     cwd: webDir,
   })
   run('node', [path.join(webDir, 'node_modules/vite/bin/vite.js'), 'build'], { cwd: webDir })
+  await minifyDist()
 }
 
-function buildWebAll() {
+async function minifyDist() {
+  const { transform } = await import(
+    pathToFileURL(path.join(webDir, 'node_modules/esbuild/lib/main.js')).href,
+  )
+  const files = [
+    ...flavors.flatMap((flavor) => [
+      path.join(webDir, 'dist', 'pkg', flavor.name, 'xray_qbrute.js'),
+      path.join(webDir, 'dist', 'pkg', flavor.name, 'xray_qbrute.worker.js'),
+    ]),
+    path.join(webDir, 'dist', 'coi-serviceworker.js'),
+    path.join(webDir, 'dist', 'search-worker.js'),
+    path.join(webDir, 'dist', 'wasm-runtime.js'),
+  ]
+  for (const file of files) {
+    if (!fs.existsSync(file)) {
+      console.warn(`skip missing ${path.relative(root, file)}`)
+      continue
+    }
+    const format = file.endsWith('coi-serviceworker.js') ? 'iife' : 'esm'
+    const before = fs.statSync(file).size
+    const { code } = await transform(fs.readFileSync(file, 'utf8'), { minify: true, format })
+    fs.writeFileSync(file, code)
+    const after = Buffer.byteLength(code)
+    console.log(`minified ${path.relative(webDir, file)}: ${before} -> ${after} bytes (-${Math.round((1 - after / before) * 100)}%)`)
+  }
+}
+
+async function buildWebAll() {
   buildWasm()
   verify()
-  buildWeb()
+  await buildWeb()
 }
 
 const tasks = {

@@ -1,5 +1,6 @@
 allowBuilds:
   '@parcel/watcher@2.6.0': true
+  esbuild: false
   esbuild@0.25.12: true
 
 minimumReleaseAgeExclude:

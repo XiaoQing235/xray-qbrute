@@ -3,12 +3,12 @@ import { ref, computed, onUnmounted } from "vue"
 import ModeToggle from "@/components/ModeToggle.vue"
 import { useSearchForm } from "@/composables/useSearchForm"
 import { useSearchWorker } from "@/composables/useSearchWorker"
-import { formatInteger, formatElapsed, formatRate } from "@/composables/useFormatters"
+import { formatInteger, formatElapsed, formatRate, formatProbability, formatExpectedDuration } from "@/composables/useFormatters"
 import { GLYPHS } from "@/constants/glyphs"
 
 const {
   state, stateLabel, activeBackend, device,
-  metrics, progressPercent, fallbacks, runtimeMessage,
+  metrics, progressPercent, hitProbability, expectedSeconds, fallbacks, runtimeMessage,
   result, doneKind, running,
   simdSupported, detectedThreads,
   start, stop, dispose,
@@ -34,13 +34,13 @@ const tagType = computed<"info" | "danger" | undefined>(() => {
 const stateGlyph = computed(() => {
   switch (state.value) {
     case "idle": return GLYPHS.circle
-    case "preparing":
+    case "preparing": return GLYPHS.play
     case "running": return GLYPHS.spinner
     case "found": return GLYPHS.flag
     case "stopped": return GLYPHS.square
     case "exhausted": return GLYPHS.ban
     case "error": return GLYPHS.alertTriangle
-    default: return ""
+    default: return GLYPHS.error
   }
 })
 
@@ -81,8 +81,8 @@ async function copyAnswer() {
           <div class="field-grid">
             <div class="field">
               <span class="field-label">Commit last 8</span>
-              <el-input v-model="form.commit" maxlength="8" pattern="[0-9a-fA-F]{8}" spellcheck="false" :disabled="running" />
-              <span class="field-hint">8 hex characters</span>
+              <el-input v-model="form.commit" maxlength="8" pattern="[0-9a-fA-F]{8}" required spellcheck="false" :disabled="running" />
+              <span class="field-hint">Required · 8 hex characters</span>
             </div>
             <div class="field">
               <span class="field-label">Node suffix</span>
@@ -92,12 +92,12 @@ async function copyAnswer() {
             <div class="field">
               <span class="field-label">Difficulty</span>
               <el-input v-model="form.difficulty" type="number" :min="0" :max="64" :disabled="running" />
-              <span class="field-hint">Leading zero bits (0-64)</span>
+              <span class="field-hint">Required · Leading zero bits (0-64)</span>
             </div>
             <div class="field">
               <span class="field-label">Maximum index</span>
-              <el-input v-model="form.maxIndex" inputmode="numeric" pattern="[0-9]+" :disabled="running" />
-              <span class="field-hint">Leave blank for full range (2<sup>58</sup>)</span>
+              <el-input v-model="form.maxIndex" inputmode="numeric" pattern="[0-9]+" required :disabled="running" />
+              <span class="field-hint">Required · Full range (2<sup>58</sup>)</span>
             </div>
             <div class="field field-full">
               <span class="field-label">Backend</span>
@@ -111,8 +111,8 @@ async function copyAnswer() {
             </div>
             <div class="field field-full">
               <span class="field-label">Threads</span>
-              <el-input v-model="form.threads" type="number" :min="0" :max="256" :disabled="running" />
-              <span class="field-hint">0 = auto · {{ detectedThreads }} threads</span>
+              <el-input v-model="form.threads" type="number" :min="0" :max="256" required :disabled="running" />
+              <span class="field-hint">Required · Recommended: {{ detectedThreads }} threads</span>
             </div>
           </div>
 
@@ -138,7 +138,7 @@ async function copyAnswer() {
           <div class="card-header-row">
             <div>
               <span class="section-overline">02 / execution</span>
-              <el-tag :type="tagType" size="small">
+              <el-tag class="status" :type="tagType" size="small">
                 <span class="glyph" :class="{ spin: state === 'preparing' || state === 'running' }" aria-hidden="true">{{ stateGlyph }}</span>
                 {{ stateLabel }}
               </el-tag>
@@ -161,6 +161,8 @@ async function copyAnswer() {
           <div><dt>Evaluated</dt><dd class="mono">{{ formatInteger(metrics.evaluated) }}</dd></div>
           <div><dt>Elapsed</dt><dd class="mono">{{ formatElapsed(metrics.elapsedMs) }}</dd></div>
           <div><dt>Rate</dt><dd class="mono">{{ formatRate(metrics.evaluated, metrics.elapsedMs) }}</dd></div>
+          <div><dt>P (hit in range)</dt><dd class="mono">{{ formatProbability(hitProbability) }}</dd></div>
+          <div><dt>Expected</dt><dd class="mono">{{ formatExpectedDuration(expectedSeconds) }}</dd></div>
         </dl>
 
         <el-alert v-if="fallbacks.length > 0" class="fallback-alert" type="info" :closable="false" show-icon>
@@ -208,7 +210,7 @@ async function copyAnswer() {
     <footer class="app-footer">
       <a href="https://github.com/Sn0wo2/xray-qbrute" target="_blank" rel="noopener noreferrer">
         <span class="glyph" aria-hidden="true">{{ GLYPHS.github }}</span>
-        xray-qbrute is serverless!
+        Star xray-qbrute if helpful~
       </a>
     </footer>
   </div>
@@ -297,6 +299,10 @@ async function copyAnswer() {
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.status .glyph {
+  margin-right: 0.1rem;
 }
 
 .section-title {

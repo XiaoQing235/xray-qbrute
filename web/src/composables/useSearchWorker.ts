@@ -36,11 +36,32 @@ export function useSearchWorker() {
     maxIndex: 0n,
     elapsedMs: 0,
   })
+  const difficulty = ref(0)
   const progressPercent = computed(() => {
     const m = metrics.value
     if (m.maxIndex === 0n) return 0
     return Number((m.processed * 10000n) / m.maxIndex) / 100
   })
+
+  const hitProbability = computed(() => {
+    const bits = difficulty.value
+    if (bits === 0 || bits > 64) return 0
+    const attempts = Number(metrics.value.evaluated)
+    if (attempts === 0) return 0
+    const workFactor = Math.pow(2, bits)
+    return 1 - Math.exp(-attempts / workFactor)
+  })
+
+  const expectedSeconds = computed(() => {
+    const bits = difficulty.value
+    if (bits === 0 || bits > 64) return 0
+    const attempts = Number(metrics.value.evaluated)
+    const elapsedMs = metrics.value.elapsedMs
+    if (attempts === 0 || elapsedMs <= 0) return 0
+    const rate = attempts / (elapsedMs / 1000)
+    return Math.pow(2, bits) / rate
+  })
+
   const fallbacks = ref<string[]>([])
   const runtimeMessage = ref('Configure and run a search.')
   const result = shallowRef<SearchResult | null>(null)
@@ -102,6 +123,7 @@ export function useSearchWorker() {
 
   function start(request: SearchRequest) {
     currentRequest = request
+    difficulty.value = request.difficulty
     resetState()
     running.value = true
     state.value = 'preparing'
@@ -292,6 +314,8 @@ export function useSearchWorker() {
     device,
     metrics,
     progressPercent,
+    hitProbability,
+    expectedSeconds,
     fallbacks,
     runtimeMessage,
     result,
