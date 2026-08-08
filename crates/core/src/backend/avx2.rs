@@ -38,11 +38,10 @@ pub fn search(
         ));
     }
 
-    let chunk_count = config.max_index.div_ceil(SEARCH_CHUNK_SIZE);
+    let mut start = config.start_index;
     let mut evaluated = 0u64;
 
-    for chunk in 0..chunk_count {
-        let start = chunk * SEARCH_CHUNK_SIZE;
+    while start < config.max_index {
         let end = (start + SEARCH_CHUNK_SIZE).min(config.max_index);
         let vector_end = end - (end - start) % 4;
         let min_index = (0..(vector_end - start) / 4)
@@ -87,6 +86,7 @@ pub fn search(
         }
 
         progress(end - start);
+        start = end;
     }
 
     Ok(BackendOutcome {

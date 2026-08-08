@@ -16,6 +16,7 @@ fn rustcrypto_avx2_search_handles_scalar_tail() {
     let progress: ProgressReporter = std::sync::Arc::new(|_| {});
     let config = SearchConfig {
         candidate: CONFIG,
+        start_index: 0,
         max_index: 3,
         leading_zero_bits: 0,
     };

@@ -5,11 +5,10 @@ use crate::candidate;
 use super::{BackendOutcome, ProgressReporter, SEARCH_CHUNK_SIZE, SearchConfig, SearchHit};
 
 pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutcome {
-    let chunk_count = config.max_index.div_ceil(SEARCH_CHUNK_SIZE);
+    let mut start = config.start_index;
     let mut evaluated = 0u64;
 
-    for chunk in 0..chunk_count {
-        let start = chunk * SEARCH_CHUNK_SIZE;
+    while start < config.max_index {
         let end = (start + SEARCH_CHUNK_SIZE).min(config.max_index);
         let chunk_size = end - start;
 
@@ -47,6 +46,7 @@ pub fn search(config: &SearchConfig, progress: &ProgressReporter) -> BackendOutc
         }
 
         progress(chunk_size);
+        start = end;
     }
 
     BackendOutcome {

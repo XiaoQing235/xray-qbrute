@@ -10,8 +10,16 @@ name = "xray-qbrute"
 path = "src/main.rs"
 
 [dependencies]
-xray-qbrute-core = { path = "../core" }
+xray-qbrute-core = { path = "../core", default-features = false }
 clap.workspace = true
 indicatif.workspace = true
 hex.workspace = true
 rayon.workspace = true
+ctrlc = "3.4.5"
+
+[features]
+default = ["scalar", "avx2", "wgpu", "cuda"]
+scalar = ["xray-qbrute-core/scalar"]
+avx2 = ["xray-qbrute-core/avx2"]
+wgpu = ["xray-qbrute-core/wgpu"]
+cuda = ["xray-qbrute-core/cuda"]

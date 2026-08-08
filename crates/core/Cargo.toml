@@ -6,8 +6,11 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = []
-# Enables the SHA-512 constants for wasm32 builds (native builds always include them).
+default = ["scalar", "avx2", "wgpu", "cuda"]
+scalar = ["dep:rayon"]
+avx2 = ["scalar"]
+wgpu = ["dep:wgpu", "dep:pollster"]
+cuda = ["dep:cudarc"]
 wasm-simd = []
 
 [dependencies]
@@ -15,10 +18,11 @@ sha2.workspace = true
 bytemuck.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-rayon.workspace = true
-pollster.workspace = true
-wgpu = { workspace = true, features = ["std", "vulkan", "metal", "wgsl"] }
+rayon = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+wgpu = { workspace = true, features = ["std", "vulkan", "metal", "wgsl"], optional = true }
 clap.workspace = true
+cudarc = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 criterion.workspace = true

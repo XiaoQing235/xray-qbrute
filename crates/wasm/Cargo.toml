@@ -21,7 +21,7 @@ wasm-webgpu = ["wasm-controller", "dep:wgpu"]
 wasm-simd = ["xray-qbrute-core/wasm-simd"]
 
 [dependencies]
-xray-qbrute-core = { path = "../core" }
+xray-qbrute-core = { path = "../core", default-features = false }
 bytemuck.workspace = true
 wasm-bindgen.workspace = true
 console_error_panic_hook.workspace = true

@@ -13,12 +13,14 @@ const CONFIG: CandidateConfig = CandidateConfig {
 fn config() -> SearchConfig {
     SearchConfig {
         candidate: CONFIG,
+        start_index: 0,
         max_index: 256,
         leading_zero_bits: 0,
     }
 }
 
 #[test]
+#[cfg(feature = "scalar")]
 fn scalar_selection_is_explicit() {
     let progress: ProgressReporter = Arc::new(|_| {});
     let outcome = search(&config(), BackendKind::Scalar, progress).expect("scalar works");
@@ -27,6 +29,7 @@ fn scalar_selection_is_explicit() {
 }
 
 #[test]
+#[cfg(feature = "scalar")]
 fn prepared_scalar_search_is_reusable() {
     let config = config();
     let prepared = prepare(&config, BackendKind::Scalar).expect("scalar preparation works");
@@ -44,6 +47,7 @@ fn prepared_scalar_search_is_reusable() {
 }
 
 #[test]
+#[cfg(feature = "scalar")]
 fn invalid_range_is_rejected_before_dispatch() {
     let progress: ProgressReporter = Arc::new(|_| {});
     let mut invalid = config();
@@ -53,6 +57,17 @@ fn invalid_range_is_rejected_before_dispatch() {
 }
 
 #[test]
+#[cfg(feature = "scalar")]
+fn start_index_exceeding_max_index_is_rejected() {
+    let progress: ProgressReporter = Arc::new(|_| {});
+    let mut invalid = config();
+    invalid.start_index = invalid.max_index + 1;
+    let error = search(&invalid, BackendKind::Scalar, progress).expect_err("start exceeds max");
+    assert!(matches!(error, SearchError::InvalidConfig(_)));
+}
+
+#[test]
+#[cfg(feature = "wgpu")]
 fn gpu_backend_cli_names_are_explicit() {
     let cases = [
         (BackendKind::WgpuVulkan, "wgpu-vulkan"),
@@ -67,12 +82,14 @@ fn gpu_backend_cli_names_are_explicit() {
 }
 
 #[test]
+#[cfg(feature = "scalar")]
 fn available_backends_return_the_same_minimum_match() {
     let config = config();
     let scalar = search(&config, BackendKind::Scalar, Arc::new(|_| {})).expect("scalar works");
     assert_eq!(scalar.hit, Some(crate::backend::SearchHit { index: 0 }));
     assert_eq!(scalar.processed, 1);
 
+    #[cfg(feature = "avx2")]
     if crate::backend::avx2::is_available() {
         let avx2 = search(&config, BackendKind::Avx2, Arc::new(|_| {})).expect("AVX2 works");
         assert_eq!(avx2.backend_name, "avx2-4x");
@@ -80,7 +97,7 @@ fn available_backends_return_the_same_minimum_match() {
         assert_eq!(avx2.processed, scalar.processed);
     }
 
-    match search(&config, AUTO_BACKENDS[0], Arc::new(|_| {})) {
+    match search(&config, auto_backends()[0], Arc::new(|_| {})) {
         Ok(wgpu) => {
             assert_eq!(wgpu.hit, scalar.hit);
             assert_eq!(wgpu.processed, scalar.processed);

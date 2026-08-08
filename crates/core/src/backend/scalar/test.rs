@@ -14,6 +14,7 @@ fn bounded_search_reports_a_valid_hit() {
             commit: 0xeb366895,
             node_suffix: 0xebac62b9,
         },
+        start_index: 0,
         max_index: 256,
         leading_zero_bits: 0,
     };

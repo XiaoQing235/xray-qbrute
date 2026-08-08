@@ -4,7 +4,7 @@ members = ["crates/core", "crates/cli", "crates/wasm"]
 default-members = ["crates/core", "crates/cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
@@ -28,6 +28,7 @@ web-sys = { version = "0.3.103", default-features = false }
 wasm-bindgen-futures = "0.4.76"
 futures-channel = "0.3.33"
 wasm-bindgen-rayon = { version = "1.3.0", features = ["no-bundler"] }
+cudarc = { version = "0.19", default-features = false, features = ["driver", "nvrtc", "dynamic-loading", "cuda-13030"] }
 
 [profile.release]
 opt-level = 3

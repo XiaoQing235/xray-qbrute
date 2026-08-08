@@ -103,10 +103,8 @@ struct GpuContext {
     kernel_config: KernelConfig,
     tuning_elapsed: Duration,
     max_workgroups_per_dimension: u32,
-    #[cfg(test)]
     hash_pipeline: wgpu::ComputePipeline,
     search_bind_group_layout: wgpu::BindGroupLayout,
-    #[cfg(test)]
     hash_bind_group_layout: wgpu::BindGroupLayout,
     adapter_name: String,
     backend_name: &'static str,
@@ -135,6 +133,7 @@ pub fn search(
 impl WgpuSearchSession {
     pub fn new(selected_backend: WgpuBackend, config: SearchConfig) -> Result<Self, SearchError> {
         let context = create_context(selected_backend, config)?;
+        context.verify_sha512(config.candidate)?;
         let buffers = context.create_search_buffers();
 
         Ok(Self { context, buffers })
@@ -151,7 +150,7 @@ impl WgpuSearchSession {
         config: &SearchConfig,
         progress: &ProgressReporter,
     ) -> Result<BackendOutcome, SearchError> {
-        let mut base = 0u64;
+        let mut base = config.start_index;
         let mut evaluated = 0u64;
         let search_start = Instant::now();
         let max_batch = MAX_BATCH.min(
@@ -285,7 +284,6 @@ async fn create_context_async(
             label: Some("xray-qbrute search bind group layout"),
             entries: &[storage_binding(0, true), storage_binding(1, false)],
         });
-    #[cfg(test)]
     let hash_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("xray-qbrute hash bind group layout"),
@@ -297,7 +295,6 @@ async fn create_context_async(
         bind_group_layouts: &[Some(&search_bind_group_layout)],
         immediate_size: 0,
     });
-    #[cfg(test)]
     let hash_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("xray-qbrute hash pipeline layout"),
         bind_group_layouts: &[Some(&hash_bind_group_layout)],
@@ -329,10 +326,8 @@ async fn create_context_async(
     );
     let tuning_elapsed = tuning_start.elapsed();
 
-    #[cfg(test)]
     let hash_constants =
         pipeline_constants(config.candidate, config.leading_zero_bits, kernel_config);
-    #[cfg(test)]
     let hash_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("xray-qbrute hash pipeline"),
         layout: Some(&hash_pipeline_layout),
@@ -352,10 +347,8 @@ async fn create_context_async(
         kernel_config,
         tuning_elapsed,
         max_workgroups_per_dimension: limits.max_compute_workgroups_per_dimension,
-        #[cfg(test)]
         hash_pipeline,
         search_bind_group_layout,
-        #[cfg(test)]
         hash_bind_group_layout,
         adapter_name: info.name,
         backend_name,
@@ -774,7 +767,6 @@ impl GpuContext {
         )
     }
 
-    #[cfg(test)]
     fn hash_first_words(&self, base: u64, candidate_count: u64) -> Result<Vec<u64>, SearchError> {
         let params = make_params(base, candidate_count);
         let output_size = candidate_count * std::mem::size_of::<u64>() as u64;
@@ -837,6 +829,31 @@ impl GpuContext {
             self.backend_name,
         )?;
         Ok(bytemuck::cast_slice(&bytes).to_vec())
+    }
+
+    /// Runtime self-test: hashes known candidate indices on the GPU and
+    /// compares the first digest word against the CPU reference implementation.
+    /// Catches shader bugs, driver miscompiles, or GPU bit flips before the
+    /// real search starts.
+    fn verify_sha512(&self, candidate: CandidateConfig) -> Result<(), SearchError> {
+        const SELF_TEST_COUNT: u64 = 256;
+        const SELF_TEST_BASES: [u64; 4] = [0, 1 << 28, 1 << 30, (1 << 58) - 256];
+
+        for base in SELF_TEST_BASES {
+            let words = self.hash_first_words(base, SELF_TEST_COUNT)?;
+            for (offset, &actual) in words.iter().enumerate() {
+                let index = base + offset as u64;
+                let hash = crate::candidate::digest(index, candidate);
+                let expected = crate::candidate::digest_word(&hash);
+                if actual != expected {
+                    return Err(SearchError::Runtime(format!(
+                        "GPU SHA-512 self-test failed at index {index}: \
+                         shader produced 0x{actual:016x}, expected 0x{expected:016x}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -38,6 +38,7 @@ fn gpu_hashes_match_scalar() {
         for candidate_config in [CONFIG, ALTERNATE_CONFIG] {
             let search_config = SearchConfig {
                 candidate: candidate_config,
+                start_index: 0,
                 max_index: 256,
                 leading_zero_bits: 64,
             };
@@ -67,6 +68,7 @@ fn gpu_search_finds_valid_hit() {
     let progress: ProgressReporter = Arc::new(|_| {});
     let config = SearchConfig {
         candidate: CONFIG,
+        start_index: 0,
         max_index: 65_536,
         leading_zero_bits: 8,
     };
@@ -100,6 +102,7 @@ fn gpu_search_returns_minimum_match() {
     let progress: ProgressReporter = Arc::new(|_| {});
     let config = SearchConfig {
         candidate: CONFIG,
+        start_index: 0,
         max_index: 256,
         leading_zero_bits: 0,
     };
@@ -123,6 +126,7 @@ fn gpu_search_returns_minimum_match() {
 fn gpu_session_reuses_resources() {
     let config = SearchConfig {
         candidate: CONFIG,
+        start_index: 0,
         max_index: 256,
         leading_zero_bits: 0,
     };
@@ -154,6 +158,7 @@ fn browser_webgpu_shader_matches_scalar_minimums() {
     let backend = TEST_BACKENDS[0];
     let initialization = SearchConfig {
         candidate: CONFIG,
+        start_index: 0,
         max_index: 4_096,
         leading_zero_bits: 8,
     };

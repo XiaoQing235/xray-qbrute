@@ -2,15 +2,21 @@ use std::sync::Arc;
 
 use crate::candidate::CandidateConfig;
 
-pub mod avx2;
+#[cfg(feature = "scalar")]
 pub mod scalar;
+#[cfg(feature = "avx2")]
+pub mod avx2;
+#[cfg(feature = "wgpu")]
 pub mod wgpu;
+#[cfg(feature = "cuda")]
+pub mod cuda;
 
 pub const SEARCH_CHUNK_SIZE: u64 = 1 << 16;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SearchConfig {
     pub candidate: CandidateConfig,
+    pub start_index: u64,
     pub max_index: u64,
     pub leading_zero_bits: u32,
 }
@@ -34,6 +40,16 @@ pub struct BackendOutcome {
 }
 
 pub type ProgressReporter = Arc<dyn Fn(u64) + Send + Sync>;
+
+
+pub fn hit_probability(attempts: u64, leading_zero_bits: u32) -> f64 {
+    let work_factor = 2f64.powi(leading_zero_bits as i32);
+    -(-(attempts as f64) / work_factor).exp_m1()
+}
+
+pub fn expected_search_seconds(leading_zero_bits: u32, rate_per_second: f64) -> f64 {
+    2f64.powi(leading_zero_bits as i32) / rate_per_second.max(f64::EPSILON)
+}
 
 #[derive(Debug)]
 pub enum SearchError {
