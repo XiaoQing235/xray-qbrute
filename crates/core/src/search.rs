@@ -3,7 +3,12 @@ use clap::ValueEnum;
 use crate::backend::{self, BackendOutcome, ProgressReporter, SearchConfig, SearchError};
 use crate::candidate::MAX_UUID_INDEX;
 
-#[cfg(not(any(feature = "scalar", feature = "avx2", feature = "wgpu", feature = "cuda")))]
+#[cfg(not(any(
+    feature = "scalar",
+    feature = "avx2",
+    feature = "wgpu",
+    feature = "cuda"
+)))]
 compile_error!(
     "xray-qbrute-core requires at least one backend feature enabled:      scalar, avx2, wgpu, or cuda"
 );
@@ -65,7 +70,7 @@ impl std::fmt::Display for BackendKind {
 
 fn auto_backends() -> Vec<BackendKind> {
     [
-        #[cfg(all(target_os = "windows", feature = "cuda"))]
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "cuda"))]
         BackendKind::Cuda,
         #[cfg(all(target_os = "macos", feature = "wgpu"))]
         BackendKind::WgpuMetal,

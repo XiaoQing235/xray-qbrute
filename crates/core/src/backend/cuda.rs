@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -66,42 +67,82 @@ pub fn search(
     session.search(config, progress)
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn locate_cuda_bin_dir() -> Option<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
 
-    if let Ok(path) = std::env::var("CUDA_PATH") {
-        roots.push(PathBuf::from(path));
-    }
-    for major in 9..=13u32 {
-        for minor in 0..=9u32 {
-            if let Ok(path) = std::env::var(format!("CUDA_PATH_V{major}_{minor}")) {
-                roots.push(PathBuf::from(path));
-            }
+    for key in ["CUDA_PATH", "CUDA_HOME"] {
+        if let Ok(path) = std::env::var(key) {
+            roots.push(PathBuf::from(path));
         }
     }
-    for drive in ['C', 'D', 'E', 'F'] {
-        let sep = std::path::MAIN_SEPARATOR;
-        roots.push(PathBuf::from(format!("{drive}:{sep}CUDA")));
-        roots.push(PathBuf::from(format!(
-            "{drive}:{sep}Program Files{sep}NVIDIA GPU Computing Toolkit{sep}CUDA"
-        )));
+    #[cfg(target_os = "windows")]
+    {
+        for major in 9..=13u32 {
+            for minor in 0..=9u32 {
+                if let Ok(path) = std::env::var(format!("CUDA_PATH_V{major}_{minor}")) {
+                    roots.push(PathBuf::from(path));
+                }
+            }
+        }
+        for drive in ['C', 'D', 'E', 'F'] {
+            let sep = std::path::MAIN_SEPARATOR;
+            roots.push(PathBuf::from(format!("{drive}:{sep}CUDA")));
+            roots.push(PathBuf::from(format!(
+                "{drive}:{sep}Program Files{sep}NVIDIA GPU Computing Toolkit{sep}CUDA"
+            )));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        roots.push(PathBuf::from("/usr/local/cuda"));
+        roots.push(PathBuf::from("/opt/cuda"));
+        for parent in ["/usr/local", "/opt"] {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with("cuda-") || name.starts_with("cuda_") {
+                        roots.push(entry.path());
+                    }
+                }
+            }
+        }
     }
 
     let mut probes: Vec<PathBuf> = Vec::new();
     for root in roots {
         probes.push(root.clone());
-        probes.push(root.join("bin"));
-        probes.push(root.join("bin").join("x64"));
+        #[cfg(target_os = "windows")]
+        {
+            probes.push(root.join("bin"));
+            probes.push(root.join("bin").join("x64"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            probes.push(root.join("lib64"));
+            probes.push(root.join("lib"));
+        }
         if let Ok(entries) = std::fs::read_dir(&root) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.len() > 1
+                #[cfg(target_os = "windows")]
+                let is_version_dir = name.len() > 1
                     && name.starts_with('v')
-                    && name[1..].chars().all(|c| c.is_ascii_digit() || c == '.')
-                {
+                    && name[1..].chars().all(|c| c.is_ascii_digit() || c == '.');
+                #[cfg(target_os = "linux")]
+                let is_version_dir = name.starts_with("cuda-") || name.starts_with("cuda_");
+                if is_version_dir {
                     probes.push(entry.path());
-                    probes.push(entry.path().join("bin"));
-                    probes.push(entry.path().join("bin").join("x64"));
+                    #[cfg(target_os = "windows")]
+                    {
+                        probes.push(entry.path().join("bin"));
+                        probes.push(entry.path().join("bin").join("x64"));
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        probes.push(entry.path().join("lib64"));
+                        probes.push(entry.path().join("lib"));
+                    }
                 }
             }
         }
@@ -111,7 +152,14 @@ fn locate_cuda_bin_dir() -> Option<PathBuf> {
         std::fs::read_dir(dir).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
                 let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                name.starts_with("nvrtc64_") && name.ends_with(".dll")
+                #[cfg(target_os = "windows")]
+                {
+                    name.starts_with("nvrtc64_") && name.ends_with(".dll")
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    name.starts_with("libnvrtc.so")
+                }
             })
         })
     })
@@ -131,14 +179,27 @@ fn ensure_cuda_bin_on_path() {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn ensure_cuda_bin_on_path() {
+    let Some(dir) = locate_cuda_bin_dir() else {
+        return;
+    };
+    let dir_str = dir.to_string_lossy().into_owned();
+    let current = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    if !current.split(':').any(|p| p == dir_str) {
+        unsafe {
+            std::env::set_var("LD_LIBRARY_PATH", format!("{dir_str}:{current}"));
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn ensure_cuda_bin_on_path() {}
 
 pub fn is_available() -> bool {
     ensure_cuda_bin_on_path();
     catch_silent(|| CudaContext::new(0).is_ok()).unwrap_or(false)
 }
-
 
 fn catch_silent<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> std::thread::Result<T> {
     let previous = std::panic::take_hook();
@@ -169,13 +230,13 @@ impl CudaSearchSession {
             .load_module(ptx)
             .map_err(|error| SearchError::Runtime(format!("CUDA module load failed: {error:?}")))?;
 
-        let search_kernel = module
-            .load_function("search_main")
-            .map_err(|error| SearchError::Runtime(format!("CUDA search kernel load failed: {error:?}")))?;
+        let search_kernel = module.load_function("search_main").map_err(|error| {
+            SearchError::Runtime(format!("CUDA search kernel load failed: {error:?}"))
+        })?;
 
-        let hash_kernel = module
-            .load_function("hash_main")
-            .map_err(|error| SearchError::Runtime(format!("CUDA hash kernel load failed: {error:?}")))?;
+        let hash_kernel = module.load_function("hash_main").map_err(|error| {
+            SearchError::Runtime(format!("CUDA hash kernel load failed: {error:?}"))
+        })?;
 
         let session = Self {
             context,
@@ -265,9 +326,9 @@ impl CudaSearchSession {
         let stream = self.context.default_stream();
 
         let params = GpuParams::new(base, candidate_count);
-        let params_buf = stream
-            .clone_htod(&[params])
-            .map_err(|error| SearchError::Runtime(format!("CUDA params upload failed: {error:?}")))?;
+        let params_buf = stream.clone_htod(&[params]).map_err(|error| {
+            SearchError::Runtime(format!("CUDA params upload failed: {error:?}"))
+        })?;
 
         let result_buf = stream
             .clone_htod(&[GpuResult {
@@ -302,9 +363,9 @@ impl CudaSearchSession {
                 })?;
         }
 
-        let results: Vec<GpuResult> = stream
-            .clone_dtoh(&result_buf)
-            .map_err(|error| SearchError::Runtime(format!("CUDA result readback failed: {error:?}")))?;
+        let results: Vec<GpuResult> = stream.clone_dtoh(&result_buf).map_err(|error| {
+            SearchError::Runtime(format!("CUDA result readback failed: {error:?}"))
+        })?;
 
         Ok(results[0])
     }
@@ -331,13 +392,13 @@ impl CudaSearchSession {
         let stream = self.context.default_stream();
 
         let params = GpuParams::new(base, count);
-        let params_buf = stream
-            .clone_htod(&[params])
-            .map_err(|error| SearchError::Runtime(format!("CUDA params upload failed: {error:?}")))?;
+        let params_buf = stream.clone_htod(&[params]).map_err(|error| {
+            SearchError::Runtime(format!("CUDA params upload failed: {error:?}"))
+        })?;
 
-        let output_buf = stream
-            .alloc_zeros::<u64>(count as usize)
-            .map_err(|error| SearchError::Runtime(format!("CUDA output alloc failed: {error:?}")))?;
+        let output_buf = stream.alloc_zeros::<u64>(count as usize).map_err(|error| {
+            SearchError::Runtime(format!("CUDA output alloc failed: {error:?}"))
+        })?;
 
         let blocks = (count as u32).div_ceil(BLOCK_SIZE);
         let cfg = LaunchConfig {
