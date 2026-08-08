@@ -220,7 +220,7 @@ function verify() {
   )
 }
 
-function buildWeb() {
+async function buildWeb() {
   fs.rmSync(path.join(webDir, 'dist'), { recursive: true, force: true })
   run('node', [path.join(webDir, 'node_modules/vue-tsc/bin/vue-tsc.js'), '--noEmit'], {
     cwd: webDir,
@@ -287,30 +287,37 @@ if (task === '--help' || task === '-h') {
   process.exit(0)
 }
 
-switch (task) {
-  case 'cli':
-    buildCli()
-    break
-  case 'wasm':
-    buildWasm()
-    break
-  case 'verify':
-    verify()
-    break
-  case 'web':
-    buildWeb()
-    break
-  case 'web-all':
-    buildWebAll()
-    break
-  case 'all':
-    buildCli()
-    buildWebAll()
-    break
-  default:
-    console.error(`unknown task: ${task}`)
-    printHelp()
-    process.exit(1)
+async function main() {
+  switch (task) {
+    case 'cli':
+      buildCli()
+      break
+    case 'wasm':
+      buildWasm()
+      break
+    case 'verify':
+      verify()
+      break
+    case 'web':
+      await buildWeb()
+      break
+    case 'web-all':
+      await buildWebAll()
+      break
+    case 'all':
+      buildCli()
+      await buildWebAll()
+      break
+    default:
+      console.error(`unknown task: ${task}`)
+      printHelp()
+      process.exit(1)
+  }
+  console.log('\nOK')
 }
 
-console.log('\nOK')
+main().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})
+
