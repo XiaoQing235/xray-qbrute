@@ -1,0 +1,34 @@
+{
+  "name": "xray-qbrute-web",
+  "packageManager": "pnpm@11.18.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@m234/nerd-fonts": "^0.5.2",
+    "@vueuse/core": "^14.4.0",
+    "coi-serviceworker": "^0.1.7",
+    "element-plus": "^2.14.3",
+    "vue": "^3.5.41"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "esbuild": "^0.28.1",
+    "prettier": "^3.9.6",
+    "sass": "^1.102.0",
+    "typescript": "^6.0.3",
+    "unplugin-auto-import": "^21.1.0",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^8.2.1",
+    "vue-tsc": "^3.3.9"
+  }
+}

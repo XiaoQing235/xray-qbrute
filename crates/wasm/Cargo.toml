@@ -1,0 +1,42 @@
+[package]
+name = "xray-qbrute-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "xray_qbrute"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+wasm-controller = [
+  "dep:wasm-bindgen-futures",
+  "dep:futures-channel",
+  "dep:wasm-bindgen-rayon",
+  "dep:rayon",
+]
+wasm-webgpu = ["wasm-controller", "dep:wgpu"]
+wasm-simd = ["xray-qbrute-core/wasm-simd"]
+
+[dependencies]
+xray-qbrute-core = { path = "../core", default-features = false }
+bytemuck.workspace = true
+wasm-bindgen.workspace = true
+console_error_panic_hook.workspace = true
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = [
+  "DedicatedWorkerGlobalScope",
+  "console",
+  "MessageEvent",
+  "Performance",
+  "WorkerGlobalScope",
+] }
+wasm-bindgen-futures = { workspace = true, optional = true }
+futures-channel = { workspace = true, optional = true }
+wgpu = { workspace = true, features = ["std", "webgpu", "wgsl"], optional = true }
+wasm-bindgen-rayon = { workspace = true, optional = true }
+rayon = { workspace = true, features = ["web_spin_lock"], optional = true }
